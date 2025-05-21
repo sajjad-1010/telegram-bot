@@ -1,9 +1,14 @@
-//go build main.go
 package main
 
-import "fmt"
+import (
+	"telegram-bot-go/config"
+	"telegram-bot-go/internal/bot"
+	"telegram-bot-go/internal/db"
+	"fmt"
+)
 
 func main() {
-	fmt.Println("hello world")
-
+	config.LoadEnv()
+	db.Init(config.GetPostgresDSN())
+	bot.RunBot()
 }
