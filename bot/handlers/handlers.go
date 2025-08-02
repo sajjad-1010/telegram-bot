@@ -8,10 +8,10 @@ import (
 
 func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
     if update.Message != nil {
+        log.Printf("RAW UPDATE: %+v\n", update)
         log.Println("Chat ID:", update.Message.Chat.ID)
         log.Println("Message ID:", update.Message.MessageID)
         log.Println("Text:", update.Message.Text)
-        log.Printf("RAW UPDATE: %+v\n", update)
     }
 
     if update.Message.IsCommand() && update.Message.Command() == "start" {
