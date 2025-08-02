@@ -2,46 +2,43 @@ package handlers
 
 import (
     "log"
+
     tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
     "telegram-bot/bot/middleware"
 )
 
 func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
     if update.Message != nil {
-    log.Printf("RAW UPDATE: %+v\n", update)
-
-    if update.Message != nil {
-        log.Println("Message Chat ID:", update.Message.Chat.ID)
+        log.Println("=== MESSAGE ===")
+        log.Println("Chat ID:", update.Message.Chat.ID)
         log.Println("Message ID:", update.Message.MessageID)
         log.Println("Text:", update.Message.Text)
+
+        if update.Message.IsCommand() && update.Message.Command() == "start" {
+            handleStart(bot, update.Message)
+        } else if update.Message.Text == "📥 دریافت فایل" {
+            if middleware.IsUserMember(bot, update.Message.From.ID) {
+                forwardContent(bot, update.Message.Chat.ID)
+            } else {
+                msg := tgbotapi.NewMessage(update.Message.Chat.ID, "برای دریافت فایل باید ابتدا عضو کانال‌ها شوید.")
+                bot.Send(msg)
+            }
+        }
+        return
     }
 
     if update.ChannelPost != nil {
-        log.Println("ChannelPost Chat ID:", update.ChannelPost.Chat.ID)
-        log.Println("ChannelPost ID:", update.ChannelPost.MessageID)
+        log.Println("=== CHANNEL POST ===")
+        log.Println("Channel ID:", update.ChannelPost.Chat.ID)
+        log.Println("Post ID:", update.ChannelPost.MessageID)
         log.Println("Text:", update.ChannelPost.Text)
+        return
     }
 
-    if update.EditedMessage != nil {
-        log.Println("EditedMessage Chat ID:", update.EditedMessage.Chat.ID)
-        log.Println("EditedMessage ID:", update.EditedMessage.MessageID)
-        log.Println("Text:", update.EditedMessage.Text)
-    }
-    }
-
-    if update.Message.IsCommand() && update.Message.Command() == "start" {
-        handleStart(bot, update.Message)
-    } else if update.Message.Text == "📥 دریافت فایل" {
-        if middleware.IsUserMember(bot, update.Message.From.ID) {
-            forwardContent(bot, update.Message.Chat.ID)
-        } else {
-            msg := tgbotapi.NewMessage(update.Message.Chat.ID, "برای دریافت فایل باید ابتدا عضو کانال‌ها شوید.")
-            bot.Send(msg)
-        }
-    }
+    log.Println("Update type not handled")
 }
 
-// این توابع باید تعریف شوند
+// --- بقیه توابع مثل قبل ---
 func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
     text := "سلام! برای دریافت فایل‌ها روی دکمه زیر بزنید:\n\n📥 دریافت فایل"
     keyboard := tgbotapi.NewReplyKeyboard(
@@ -55,8 +52,8 @@ func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 }
 
 func forwardContent(bot *tgbotapi.BotAPI, chatID int64) {
-    fromChatID := int64(-1001234567890) // این رو با آیدی گروه خودت عوض کن
-    messageID := 42                     // ID پیامی که میخوای فوروارد شه
+    fromChatID := int64(-1001234567890)
+    messageID := 42
 
     forward := tgbotapi.NewForward(chatID, fromChatID, messageID)
     bot.Send(forward)
