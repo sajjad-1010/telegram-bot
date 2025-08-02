@@ -9,7 +9,7 @@ import (
 func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
     if update.Message != nil {
         log.Println("Chat ID:", update.Message.Chat.ID)
-        log.Println("Message ID:", update.Message.MessageID)
+        log.Println("Message ID:", update.Message)
         log.Println("Text:", update.Message.Text)
     }
 
