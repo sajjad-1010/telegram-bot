@@ -38,7 +38,6 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
     log.Println("Update type not handled")
 }
 
-// --- بقیه توابع مثل قبل ---
 func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
     text := "سلام! برای دریافت فایل‌ها روی دکمه زیر بزنید:\n\n📥 دریافت فایل"
     keyboard := tgbotapi.NewReplyKeyboard(
