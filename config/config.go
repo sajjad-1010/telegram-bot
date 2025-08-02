@@ -1,30 +1,22 @@
 package config
 
 import (
-	"github.com/joho/godotenv"
-	"log"
-	"os"
-	"strings"
+    "log"
+    "os"
+
+    "github.com/joho/godotenv"
 )
 
 func LoadEnv() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found")
-	}
+    err := godotenv.Load()
+    if err != nil {
+        log.Println("No .env file found, using system environment variables")
+    }
 }
 
-func GetBotToken() string {
-	return os.Getenv("BOT_TOKEN")
-}
-
-func GetChannelIDs() []string {
-	return strings.Split(os.Getenv("CHANNEL_IDS"), ",")
-}
-
-func GetFilePath() string {
-	return os.Getenv("FILE_BASE_PATH")
-}
-
-func GetPostgresDSN() string {
-	return os.Getenv("POSTGRES_DSN")
+func GetEnv(key, fallback string) string {
+    if value, exists := os.LookupEnv(key); exists {
+        return value
+    }
+    return fallback
 }

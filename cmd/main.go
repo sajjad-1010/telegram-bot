@@ -1,14 +1,14 @@
 package main
 
 import (
-	"telegram-bot-go/config"
-	"telegram-bot-go/internal/bot"
-	"telegram-bot-go/internal/db"
-	"fmt"
+    "log"
+    "telegram-bot/bot"
+    "telegram-bot/config"
 )
 
 func main() {
-	config.LoadEnv()
-	db.Init(config.GetPostgresDSN())
-	bot.RunBot()
+    config.LoadEnv()
+    if err := bot.Start(); err != nil {
+        log.Fatal(err)
+    }
 }
