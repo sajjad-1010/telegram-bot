@@ -11,6 +11,7 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
         log.Println("Chat ID:", update.Message.Chat.ID)
         log.Println("Message ID:", update.Message.MessageID)
         log.Println("Text:", update.Message.Text)
+        log.Printf("RAW UPDATE: %+v\n", update)
     }
 
     if update.Message.IsCommand() && update.Message.Command() == "start" {
