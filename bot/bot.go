@@ -28,7 +28,6 @@ func Start() error {
     }
 
     for update := range updates {
-        log.Printf("RAW UPDATE: %+v\n", update)
         handlers.HandleUpdate(Bot, update)
     }
     return nil

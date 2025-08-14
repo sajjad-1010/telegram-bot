@@ -8,11 +8,11 @@ import (
 )
 
 func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
-    if update.Message != nil {
-        log.Println("=== MESSAGE ===")
+    //     log.Println("Text:", update.Message.Text)        
+        if update.Message != nil {
+        log.Println("=== A NEW MESSAGE FROM CHAT===")
         log.Println("Chat ID:", update.Message.Chat.ID)
         log.Println("Message ID:", update.Message.MessageID)
-        log.Println("Text:", update.Message.Text)
 
         if update.Message.IsCommand() && update.Message.Command() == "start" {
             handleStart(bot, update.Message)
@@ -24,7 +24,6 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
                 bot.Send(msg)
             }
         }
-        return
     }
 
     if update.ChannelPost != nil {
