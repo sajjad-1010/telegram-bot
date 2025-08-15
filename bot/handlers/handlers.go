@@ -1,58 +1,122 @@
 package handlers
 
 import (
-    "log"
+	"log"
+	"strconv"
+	"strings"
 
-    tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
-    "telegram-bot/bot/middleware"
+	"telegram-bot/bot/middleware"
+	"telegram-bot/utils"
+    "telegram-bot/config" 
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
-func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
-    //     log.Println("Text:", update.Message.Text)        
-        if update.Message != nil {
-        log.Println("=== A NEW MESSAGE FROM CHAT===")
-        log.Println("Chat ID:", update.Message.Chat.ID)
-        log.Println("Message ID:", update.Message.MessageID)
+var (
+	requiredChannels  []string
+	forwardFromChatID int64
+	forwardMessageID  int
+)
 
-        if update.Message.IsCommand() && update.Message.Command() == "start" {
-            handleStart(bot, update.Message)
-        } else if update.Message.Text == "📥 دریافت فایل" {
-            if middleware.IsUserMember(bot, update.Message.From.ID) {
-                forwardContent(bot, update.Message.Chat.ID)
-            } else {
-                msg := tgbotapi.NewMessage(update.Message.Chat.ID, "برای دریافت فایل باید ابتدا عضو کانال‌ها شوید.")
-                bot.Send(msg)
-            }
+func init() {
+    config.LoadEnv()
+
+    channels := config.GetEnv("REQUIRED_CHANNELS", "")
+    if channels != "" {
+        requiredChannels = strings.Split(channels, ",")
+    } else {
+        requiredChannels = []string{}
+    }
+
+    chatIDStr := config.GetEnv("FORWARD_FROM_CHAT_ID", "")
+    if chatIDStr != "" {
+        id, err := strconv.ParseInt(chatIDStr, 10, 64)
+        if err != nil {
+            log.Println("Error parsing FORWARD_FROM_CHAT_ID:", err)
+        } else {
+            forwardFromChatID = id
         }
+    } else {
+        log.Println("FORWARD_FROM_CHAT_ID is not set!")
     }
 
-    if update.ChannelPost != nil {
-        log.Println("=== CHANNEL POST ===")
-        log.Println("Channel ID:", update.ChannelPost.Chat.ID)
-        log.Println("Post ID:", update.ChannelPost.MessageID)
-        log.Println("Text:", update.ChannelPost.Text)
-        return
+    msgIDStr := config.GetEnv("FORWARD_MESSAGE_ID", "")
+    if msgIDStr != "" {
+        id, err := strconv.Atoi(msgIDStr)
+        if err != nil {
+            log.Println("Error parsing FORWARD_MESSAGE_ID:", err)
+        } else {
+            forwardMessageID = id
+        }
+    } else {
+        log.Println("FORWARD_MESSAGE_ID is not set!")
     }
 
-    log.Println("Update type not handled")
+    // log.Println("Loaded ENV:", requiredChannels, forwardFromChatID, forwardMessageID)
+}
+
+func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
+	//     log.Println("Text:", update.Message.Text)
+	if update.Message != nil {
+		log.Println("=== A NEW MESSAGE FROM CHAT===")
+		log.Println("Chat ID:", update.Message.Chat.ID)
+		log.Println("Message ID:", update.Message.MessageID)
+
+		if update.Message.IsCommand() && update.Message.Command() == "start" {
+			handleStart(bot, update.Message)
+		}
+
+		if strings.TrimSpace(update.Message.Text) == "📥 دریافت فایل" {
+			if middleware.IsUserMember(bot, update.Message.From.ID) {
+				forwardContent(bot, update.Message.Chat.ID)
+			} else {
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "برای دریافت فایل باید ابتدا عضو کانال‌ها شوید.")
+				msg.ReplyMarkup = utils.GetJoinChannelsKeyboard(requiredChannels)
+				bot.Send(msg)
+			}
+		}
+
+	}
+
+	if update.CallbackQuery != nil {
+		handleCallbackQuery(bot, update.CallbackQuery)
+	}
 }
 
 func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-    text := "سلام! برای دریافت فایل‌ها روی دکمه زیر بزنید:\n\n📥 دریافت فایل"
-    keyboard := tgbotapi.NewReplyKeyboard(
-        tgbotapi.NewKeyboardButtonRow(
-            tgbotapi.NewKeyboardButton("📥 دریافت فایل"),
-        ),
-    )
-    reply := tgbotapi.NewMessage(msg.Chat.ID, text)
-    reply.ReplyMarkup = keyboard
-    bot.Send(reply)
+	text := "سلام! برای دریافت فایل‌ها روی دکمه زیر بزنید:\n\n📥 دریافت فایل"
+	keyboard := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("📥 دریافت فایل"),
+		),
+	)
+	reply := tgbotapi.NewMessage(msg.Chat.ID, text)
+	reply.ReplyMarkup = keyboard
+	bot.Send(reply)
 }
 
 func forwardContent(bot *tgbotapi.BotAPI, chatID int64) {
-    fromChatID := int64(-1001234567890)
-    messageID := 42
+    forward := tgbotapi.NewForward(chatID, forwardFromChatID, forwardMessageID)
+    _, err := bot.Send(forward)
+    if err != nil {
+        log.Printf("❌ Error forwarding message from %d to %d: %v", forwardFromChatID, chatID, err)
+    } else {
+        log.Printf("✅ Message forwarded from %d to %d", forwardFromChatID, chatID)
+    }
+}
 
-    forward := tgbotapi.NewForward(chatID, fromChatID, messageID)
-    bot.Send(forward)
+func handleCallbackQuery(bot *tgbotapi.BotAPI, cq *tgbotapi.CallbackQuery) {
+	log.Println("CallbackQuery from user:", cq.From.UserName, "Data:", cq.Data)
+
+	if cq.Data == "check_membership" {
+		if middleware.IsUserMember(bot, cq.From.ID) {
+			bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "✅ شما عضو کانال‌ها هستید!"))
+		} else {
+			msg := tgbotapi.NewMessage(cq.Message.Chat.ID, "❌ هنوز عضو کانال‌ها نشده‌اید.")
+			msg.ReplyMarkup = utils.GetJoinChannelsKeyboard(requiredChannels)
+			bot.Send(msg)
+		}
+	}
+
+	bot.AnswerCallbackQuery(tgbotapi.NewCallback(cq.ID, ""))
 }
