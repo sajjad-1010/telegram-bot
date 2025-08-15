@@ -1,34 +1,40 @@
 package middleware
 
 import (
+    "log"
     "os"
-    "strconv"
     "strings"
 
     tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
 func IsUserMember(bot *tgbotapi.BotAPI, userID int) bool {
-    requiredChannels := strings.Split(os.Getenv("REQUIRED_CHANNELS"), ",")
-    for _, ch := range requiredChannels {
-        chatID := chID(ch)
+    channels := os.Getenv("REQUIRED_CHANNELS")
+    if channels == "" {
+        log.Println("⚠ REQUIRED_CHANNELS is empty in .env")
+        return false
+    }
+
+    channelList := strings.Split(channels, ",")
+    for _, ch := range channelList {
+        ch = strings.TrimSpace(ch)
+
         member, err := bot.GetChatMember(tgbotapi.ChatConfigWithUser{
-            ChatID: chatID,
+            ChatID: 0,
+            SuperGroupUsername: "@" + ch,
             UserID: userID,
         })
-        if err != nil || member.Status == "left" {
+        if err != nil {
+            log.Printf("❌ Error checking membership for @%s: %v", ch, err)
+            return false
+        }
+
+        log.Printf("ℹ User %d status in @%s: %s", userID, ch, member.Status)
+
+        if member.Status != "member" && member.Status != "administrator" && member.Status != "creator" {
             return false
         }
     }
-    return true
-}
 
-func chID(username string) int64 {
-    if strings.HasPrefix(username, "@") {
-        username = username[1:]
-    }
-    if id, err := strconv.ParseInt(username, 10, 64); err == nil {
-        return id
-    }
-    return 0
+    return true
 }
