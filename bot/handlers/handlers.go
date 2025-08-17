@@ -26,7 +26,8 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
         }
     }
 
-    if update.ChannelPost != nil {
+    if update.ChannelPost != nil {  
+
         log.Println("=== CHANNEL POST ===")
         log.Println("Channel ID:", update.ChannelPost.Chat.ID)
         log.Println("Post ID:", update.ChannelPost.MessageID)
