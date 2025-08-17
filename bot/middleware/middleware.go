@@ -19,6 +19,7 @@ func IsUserMember(bot *tgbotapi.BotAPI, userID int) bool {
         if err != nil || member.Status == "left" {
             return false
         }
+        
     }
     return true
 }
