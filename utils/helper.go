@@ -1,6 +1,6 @@
 package utils
 
-import "github.com/go-telegram-bot-api/telegram-bot-api"
+import "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 func GetJoinChannelsKeyboard(channels []string) tgbotapi.InlineKeyboardMarkup {
     var rows [][]tgbotapi.InlineKeyboardButton
