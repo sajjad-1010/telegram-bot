@@ -1,12 +1,20 @@
 package utils
+import "fmt"
 
 import "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-func GetJoinChannelsKeyboard(channels []string) tgbotapi.InlineKeyboardMarkup {
-    var rows [][]tgbotapi.InlineKeyboardButton
+func GetJoinChannelsButtons(channels []string) []tgbotapi.InlineKeyboardButton {
+    var buttons []tgbotapi.InlineKeyboardButton
     for _, ch := range channels {
         btn := tgbotapi.NewInlineKeyboardButtonURL("عضویت در "+ch, "https://t.me/"+ch)
-        rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
+        buttons = append(buttons, btn)
     }
-    return tgbotapi.NewInlineKeyboardMarkup(rows...)
+    return buttons
 }
+
+
+func MakeLinkForForwardingMessage(msgID int) tgbotapi.InlineKeyboardButton {
+    url := fmt.Sprintf("https://t.me/realblyat_bot?start=msg%d", msgID)
+    return tgbotapi.NewInlineKeyboardButtonURL("مشاهده پیام", url)
+}
+
