@@ -71,33 +71,13 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 				handleStart(bot, update.Message)
 			}
 		}
-
-		if strings.TrimSpace(update.Message.Text) == "📥 دریافت فایل" {
-			if middleware.IsUserMember(bot, update.Message.Chat.ID) {
-				forwardContent(bot, update.Message.Chat.ID)
-			} else {
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "برای دریافت فایل باید ابتدا عضو کانال‌ها شوید.")
-				msg.ReplyMarkup = utils.GetJoinChannelsKeyboard(requiredChannels)
-				bot.Send(msg)
-			}
-		}
-
-	}
-
-	if update.CallbackQuery != nil {
-		handleCallbackQuery(bot, update.CallbackQuery)
 	}
 }
 
 func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	text := "سلام! برای دریافت فایل‌ها روی دکمه زیر بزنید:\n\n📥 دریافت فایل"
-	keyboard := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📥 دریافت فایل"),
-		),
-	)
+
+	text := "برای دریافت فایل باید لینک مخصوص فایل رو کلیک کنی "
 	reply := tgbotapi.NewMessage(msg.Chat.ID, text)
-	reply.ReplyMarkup = keyboard
 	bot.Send(reply)
 }
 
@@ -113,7 +93,16 @@ func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {
 			}
 		} else {
 			notMemberMsg := tgbotapi.NewMessage(chatID, "برای دریافت فایل باید ابتدا عضو کانال‌ها شوید.")
-			notMemberMsg.ReplyMarkup = utils.GetJoinChannelsKeyboard(requiredChannels)
+
+			joinButtons := utils.GetJoinChannelsButtons(requiredChannels)
+			forwardBtn := utils.MakeLinkForForwardingMessage(msgID)
+
+			keyboard := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(joinButtons...),
+				tgbotapi.NewInlineKeyboardRow(forwardBtn),
+			)
+
+			notMemberMsg.ReplyMarkup = keyboard
 			bot.Send(notMemberMsg)
 		}
 		return
@@ -137,24 +126,4 @@ func forwardContent(bot *tgbotapi.BotAPI, chatID int64) {
 	} else {
 		log.Printf("✅ Message forwarded from %d to %d", forwardFromChatID, chatID)
 	}
-}
-
-func handleCallbackQuery(bot *tgbotapi.BotAPI, cq *tgbotapi.CallbackQuery) {
-	log.Println("CallbackQuery from user:", cq.From.UserName, "Data:", cq.Data)
-
-	if cq.Data == "check_membership" {
-		if middleware.IsUserMember(bot, cq.From.ID) {
-			bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "✅ شما عضو کانال‌ها هستید!"))
-		} else {
-			msg := tgbotapi.NewMessage(cq.Message.Chat.ID, "❌ هنوز عضو کانال‌ها نشده‌اید.")
-			msg.ReplyMarkup = utils.GetJoinChannelsKeyboard(requiredChannels)
-			bot.Send(msg)
-		}
-	}
-
-	callbackConfig := tgbotapi.NewCallback(cq.ID, "")
-	if _, err := bot.Request(callbackConfig); err != nil {
-		log.Println("Error answering callback query:", err)
-	}
-
 }
