@@ -4,6 +4,9 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"fmt"
+	"math/rand"
+	"time"
 
 	"telegram-bot/bot/middleware"
 	"telegram-bot/config"
@@ -15,11 +18,14 @@ import (
 var (
 	requiredChannels  []string
 	forwardFromChatID int64
-	forwardMessageID  int
+	alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	xorKey uint64
 )
 
 func init() {
 	config.LoadEnv()
+	
+	uint64 := config.GetEnv("uint64", "")
 
 	channels := config.GetEnv("REQUIRED_CHANNELS", "")
 	if channels != "" {
@@ -40,30 +46,30 @@ func init() {
 		log.Println("FORWARD_FROM_CHAT_ID is not set!")
 	}
 
-	msgIDStr := config.GetEnv("FORWARD_MESSAGE_ID", "")
-	if msgIDStr != "" {
-		id, err := strconv.Atoi(msgIDStr)
-		if err != nil {
-			log.Println("Error parsing FORWARD_MESSAGE_ID:", err)
-		} else {
-			forwardMessageID = id
-		}
-	} else {
-		log.Println("FORWARD_MESSAGE_ID is not set!")
-	}
-
 	// log.Println("Loaded ENV:", requiredChannels, forwardFromChatID, forwardMessageID)
 }
 
 func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
-	//     log.Println("Text:", update.Message.Text)
+
 	if update.Message != nil {
-		log.Println("=== A NEW MESSAGE FROM CHAT===")
 		log.Println("Chat ID:", update.Message.Chat.ID)
 		log.Println("Message ID:", update.Message.MessageID)
-		// log.Println("#####Message :", update.Message, "#####")
+		log.Println("Text:", update.Message.Text)
+		
+		
+		if update.Message.Chat.ID == forwardFromChatID {
+			log.Println("=== A NEW MESSAGE FROM GROUP CHAT===")
+			log.Println("Chat ID:", update.Message.Chat.ID)
+			log.Println("Message ID:", update.Message.MessageID)
+
+		}
 
 		if update.Message.IsCommand() && update.Message.Command() == "start" {
+			log.Println("=== A NEW MESSAGE FROM BOT===")
+			log.Println("Chat ID:", update.Message.Chat.ID)
+			log.Println("Message ID:", update.Message.MessageID)
+			log.Println("Text:", update.Message.Text)
+
 			args := update.Message.CommandArguments()
 			if args != "" {
 				handleStartWithArgs(bot, update.Message.Chat.ID, args)
@@ -118,12 +124,6 @@ func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {
 	bot.Send(reply)
 }
 
-func forwardContent(bot *tgbotapi.BotAPI, chatID int64) {
-	forward := tgbotapi.NewForward(chatID, forwardFromChatID, forwardMessageID)
-	_, err := bot.Send(forward)
-	if err != nil {
-		log.Printf("❌ Error forwarding message from %d to %d: %v", forwardFromChatID, chatID, err)
-	} else {
-		log.Printf("✅ Message forwarded from %d to %d", forwardFromChatID, chatID)
-	}
+func makeLinkForNewMessage(chatID int64)  {
+	
 }
