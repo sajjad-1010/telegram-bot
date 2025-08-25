@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -15,7 +16,6 @@ import (
 var (
 	requiredChannels  []string
 	forwardFromChatID int64
-	forwardMessageID  int
 )
 
 func init() {
@@ -40,30 +40,32 @@ func init() {
 		log.Println("FORWARD_FROM_CHAT_ID is not set!")
 	}
 
-	msgIDStr := config.GetEnv("FORWARD_MESSAGE_ID", "")
-	if msgIDStr != "" {
-		id, err := strconv.Atoi(msgIDStr)
-		if err != nil {
-			log.Println("Error parsing FORWARD_MESSAGE_ID:", err)
-		} else {
-			forwardMessageID = id
-		}
-	} else {
-		log.Println("FORWARD_MESSAGE_ID is not set!")
-	}
-
 	// log.Println("Loaded ENV:", requiredChannels, forwardFromChatID, forwardMessageID)
 }
 
 func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
-	//     log.Println("Text:", update.Message.Text)
+
 	if update.Message != nil {
-		log.Println("=== A NEW MESSAGE FROM CHAT===")
 		log.Println("Chat ID:", update.Message.Chat.ID)
 		log.Println("Message ID:", update.Message.MessageID)
-		// log.Println("#####Message :", update.Message, "#####")
+		log.Println("Text:", update.Message.Text)
 
-		if update.Message.IsCommand() && update.Message.Command() == "start" {
+		if update.Message.Chat.ID == forwardFromChatID {
+			log.Println("============ A NEW MESSAGE FROM GROUP CHAT ============")
+			log.Println("Chat ID:", update.Message.Chat.ID)
+			log.Println("Message ID:", update.Message.MessageID)
+
+			messageID := update.Message.MessageID
+			makeLinkForNewMessage(bot, messageID)
+
+		}
+
+		if update.Message.Command() == "start" {
+			log.Println("============ A NEW MESSAGE FROM BOT ============")
+			log.Println("Chat ID:", update.Message.Chat.ID)
+			log.Println("Message ID:", update.Message.MessageID)
+			log.Println("Text:", update.Message.Text)
+
 			args := update.Message.CommandArguments()
 			if args != "" {
 				handleStartWithArgs(bot, update.Message.Chat.ID, args)
@@ -81,13 +83,13 @@ func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	bot.Send(reply)
 }
 
-func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {
+func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {go
 	log.Println("📌 handleStartWithArgs called with args:", args)
-	idStr := strings.TrimPrefix(args, "msg")
-	msgID, err := strconv.Atoi(idStr)
+
+	DecodemsgID, err := utils.Decode(args)
 	if err == nil {
 		if middleware.IsUserMember(bot, chatID) {
-			forward := tgbotapi.NewForward(chatID, forwardFromChatID, msgID)
+			forward := tgbotapi.NewForward(chatID, forwardFromChatID, DecodemsgID)
 			if _, err := bot.Send(forward); err != nil {
 				log.Println("❌ Error forwarding message:", err)
 			}
@@ -95,7 +97,7 @@ func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {
 			notMemberMsg := tgbotapi.NewMessage(chatID, "برای دریافت فایل باید ابتدا عضو کانال‌ها شوید.")
 
 			joinButtons := utils.GetJoinChannelsButtons(requiredChannels)
-			forwardBtn := utils.MakeLinkForForwardingMessage(msgID)
+			forwardBtn := utils.MakeLinkForForwardingMessage(DecodemsgID)
 
 			keyboard := tgbotapi.NewInlineKeyboardMarkup(
 				tgbotapi.NewInlineKeyboardRow(joinButtons...),
@@ -105,25 +107,28 @@ func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {
 			notMemberMsg.ReplyMarkup = keyboard
 			bot.Send(notMemberMsg)
 		}
-		return
+	} else {
+		text := "برای دریافت فایل باید لینک درست و مخصوص فایل رو کلیک کنی "
+		reply := tgbotapi.NewMessage(chatID, text)
+		bot.Send(reply)
 	}
-	msgText := "ورودی نامعتبره! برای دریافت فایل‌ها روی دکمه زیر بزنید:\n\n📥 دریافت فایل"
-	keyboard := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📥 دریافت فایل"),
-		),
-	)
-	reply := tgbotapi.NewMessage(chatID, msgText)
-	reply.ReplyMarkup = keyboard
-	bot.Send(reply)
+
 }
 
-func forwardContent(bot *tgbotapi.BotAPI, chatID int64) {
-	forward := tgbotapi.NewForward(chatID, forwardFromChatID, forwardMessageID)
-	_, err := bot.Send(forward)
-	if err != nil {
-		log.Printf("❌ Error forwarding message from %d to %d: %v", forwardFromChatID, chatID, err)
-	} else {
-		log.Printf("✅ Message forwarded from %d to %d", forwardFromChatID, chatID)
+func makeLinkForNewMessage(bot *tgbotapi.BotAPI, messageID int) {
+
+	if messageID < 0 {
+		fmt.Errorf("your post in groupChat have negative messageID it's not supported")
 	}
+	Encodedmsg := utils.Encode(messageID)
+
+	link := fmt.Sprintf("https://t.me/realblyat_bot?start=%s", Encodedmsg)
+
+	msg := tgbotapi.NewMessage(forwardFromChatID, link)
+	_, err := bot.Send(msg)
+	if err != nil {
+		fmt.Errorf("failed to send message: %s", link)
+	}
+
+	log.Println("From message succesfully create an Encoded link" + link + " and sended into the groupChat")
 }
