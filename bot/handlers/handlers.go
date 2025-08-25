@@ -1,10 +1,10 @@
 package handlers
 
 import (
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
-	"fmt"
 
 	"telegram-bot/bot/middleware"
 	"telegram-bot/config"
@@ -49,15 +49,14 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		log.Println("Chat ID:", update.Message.Chat.ID)
 		log.Println("Message ID:", update.Message.MessageID)
 		log.Println("Text:", update.Message.Text)
-		
-		
+
 		if update.Message.Chat.ID == forwardFromChatID {
 			log.Println("============ A NEW MESSAGE FROM GROUP CHAT ============")
 			log.Println("Chat ID:", update.Message.Chat.ID)
 			log.Println("Message ID:", update.Message.MessageID)
 
 			messageID := update.Message.MessageID
-			makeLinkForNewMessage(bot , messageID)
+			makeLinkForNewMessage(bot, messageID)
 
 		}
 
@@ -84,12 +83,11 @@ func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	bot.Send(reply)
 }
 
-func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {
+func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {go
 	log.Println("📌 handleStartWithArgs called with args:", args)
 
-	DecodemsgID , err := utils.Decode(args)
-	log.Println(err,"###################")
-	if err != nil {
+	DecodemsgID, err := utils.Decode(args)
+	if err == nil {
 		if middleware.IsUserMember(bot, chatID) {
 			forward := tgbotapi.NewForward(chatID, forwardFromChatID, DecodemsgID)
 			if _, err := bot.Send(forward); err != nil {
@@ -109,11 +107,12 @@ func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {
 			notMemberMsg.ReplyMarkup = keyboard
 			bot.Send(notMemberMsg)
 		}
+	} else {
+		text := "برای دریافت فایل باید لینک درست و مخصوص فایل رو کلیک کنی "
+		reply := tgbotapi.NewMessage(chatID, text)
+		bot.Send(reply)
 	}
 
-	text := "برای دریافت فایل باید لینک درست و مخصوص فایل رو کلیک کنی "
-	reply := tgbotapi.NewMessage(chatID, text)
-	bot.Send(reply)
 }
 
 func makeLinkForNewMessage(bot *tgbotapi.BotAPI, messageID int) {
@@ -122,14 +121,14 @@ func makeLinkForNewMessage(bot *tgbotapi.BotAPI, messageID int) {
 		fmt.Errorf("your post in groupChat have negative messageID it's not supported")
 	}
 	Encodedmsg := utils.Encode(messageID)
-	
+
 	link := fmt.Sprintf("https://t.me/realblyat_bot?start=%s", Encodedmsg)
-	
+
 	msg := tgbotapi.NewMessage(forwardFromChatID, link)
 	_, err := bot.Send(msg)
 	if err != nil {
 		fmt.Errorf("failed to send message: %s", link)
 	}
 
-	log.Println("From message succesfully create an Encoded link"+link+" and sended into the groupChat")
+	log.Println("From message succesfully create an Encoded link" + link + " and sended into the groupChat")
 }
