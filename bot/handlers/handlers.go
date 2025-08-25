@@ -83,14 +83,16 @@ func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	bot.Send(reply)
 }
 
-func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {go
-	log.Println("📌 handleStartWithArgs called with args:", args)
+func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {
+	go log.Println("📌 handleStartWithArgs called with args:", args)
 
 	DecodemsgID, err := utils.Decode(args)
 	if err == nil {
 		if middleware.IsUserMember(bot, chatID) {
-			forward := tgbotapi.NewForward(chatID, forwardFromChatID, DecodemsgID)
-			if _, err := bot.Send(forward); err != nil {
+
+			forward := tgbotapi.NewCopyMessage(chatID,forwardFromChatID,DecodemsgID)
+			
+			if _, err := bot.CopyMessage(forward); err != nil {
 				log.Println("❌ Error forwarding message:", err)
 			}
 		} else {
@@ -112,7 +114,6 @@ func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, args string) {go
 		reply := tgbotapi.NewMessage(chatID, text)
 		bot.Send(reply)
 	}
-
 }
 
 func makeLinkForNewMessage(bot *tgbotapi.BotAPI, messageID int) {
