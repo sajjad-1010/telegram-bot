@@ -11,21 +11,21 @@ import (
 var Bot *tgbotapi.BotAPI
 
 func Start() error {
-	// بارگذاری متغیرهای محیطی از فایل .env
 	config.LoadEnv()
 
-	// گرفتن توکن ربات با امکان fallback
 	token := config.GetEnv("BOT_TOKEN", "")
 	if token == "" {
 		return logError("BOT_TOKEN is not set")
 	}
 
 	var err error
+	log.Println("Creating bot client and calling getMe...")
 	Bot, err = tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return err
 	}
-	log.Println("Bot started")
+	log.Printf("Bot authorized as @%s (id=%d)", Bot.Self.UserName, Bot.Self.ID)
+	log.Println("Bot started, listening for updates...")
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60

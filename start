@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+
+cd "${SCRIPT_DIR}"
+
+if [[ ! -f ".env" ]]; then
+  echo "No .env file found in ${SCRIPT_DIR}, using system environment variables"
+fi
+
+# go-sqlite3 needs cgo; default to enabling it.
+: "${CGO_ENABLED:=1}"
+
+go run ./cmd "$@"
