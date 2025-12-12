@@ -1,0 +1,14 @@
+.env
+*.db
+*.exe
+*.log
+*.out
+*.test
+bin/
+build/
+dist/
+
+# IDE/editor
+.DS_Store
+.idea/
+.vscode/
