@@ -40,7 +40,7 @@ func Start() error {
 }
 
 func logError(msg string) error {
-	log.Println("⚠", msg)
+	log.Println("ERROR:", msg)
 	return &customError{msg}
 }
 

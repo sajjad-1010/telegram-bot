@@ -6,23 +6,28 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 
-
-	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 func GetJoinChannelsButtons(channels []string) []tgbotapi.InlineKeyboardButton {
 	var buttons []tgbotapi.InlineKeyboardButton
 	for _, ch := range channels {
-		btn := tgbotapi.NewInlineKeyboardButtonURL("عضویت در "+ch, "https://t.me/"+ch)
+		btn := tgbotapi.NewInlineKeyboardButtonURL("Join "+ch, "https://t.me/"+ch)
 		buttons = append(buttons, btn)
 	}
 	return buttons
 }
 
-func MakeLinkForForwardingMessage(msgID int) tgbotapi.InlineKeyboardButton {
-	url := fmt.Sprintf("https://t.me/realblyat_bot?start=msg%d", msgID)
-	return tgbotapi.NewInlineKeyboardButtonURL("مشاهده پیام", url)
+func MakeDeepLink(botUsername, payload string) string {
+	cleanUser := strings.TrimPrefix(strings.TrimSpace(botUsername), "@")
+	return fmt.Sprintf("https://t.me/%s?start=%s", cleanUser, payload)
+}
+
+func MakeForwardButton(botUsername, payload string) tgbotapi.InlineKeyboardButton {
+	url := MakeDeepLink(botUsername, payload)
+	return tgbotapi.NewInlineKeyboardButtonURL("Open message", url)
 }
 
 func Encode(num int) string {

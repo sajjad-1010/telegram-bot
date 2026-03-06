@@ -4,16 +4,15 @@ import (
 	"log"
 	"strings"
 
-	"telegram-bot/config"
-
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"telegram-bot/config"
 )
 
 func IsUserMember(bot *tgbotapi.BotAPI, userID int64) bool {
 	log.Println("userId:", userID)
 	channels := config.GetEnv("REQUIRED_CHANNELS", "")
 	if channels == "" {
-		log.Println("⚠ REQUIRED_CHANNELS is empty in .env")
+		log.Println("REQUIRED_CHANNELS is empty in .env")
 		return false
 	}
 
@@ -31,11 +30,11 @@ func IsUserMember(bot *tgbotapi.BotAPI, userID int64) bool {
 			},
 		})
 		if err != nil {
-			log.Printf("❌ Error checking membership for @%s: %v", ch, err)
+			log.Printf("Error checking membership for @%s: %v", ch, err)
 			return false
 		}
 
-		log.Printf("ℹ User %d status in @%s: %s", userID, ch, member.Status)
+		log.Printf("User %d status in @%s: %s", userID, ch, member.Status)
 
 		if member.Status != "member" && member.Status != "administrator" && member.Status != "creator" {
 			return false
