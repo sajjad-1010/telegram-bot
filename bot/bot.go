@@ -2,17 +2,17 @@ package bot
 
 import (
 	"log"
+	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"telegram-bot/bot/handlers"
 	"telegram-bot/config"
+	"telegram-bot/internal/redditfeed"
 )
 
 var Bot *tgbotapi.BotAPI
 
 func Start() error {
-	config.LoadEnv()
-
 	token := config.GetEnv("BOT_TOKEN", "")
 	if token == "" {
 		return logError("BOT_TOKEN is not set")
@@ -20,11 +20,22 @@ func Start() error {
 
 	var err error
 	log.Println("Creating bot client and calling getMe...")
-	Bot, err = tgbotapi.NewBotAPI(token)
+	localAPIURL := config.GetEnv("TELEGRAM_LOCAL_API_URL", "")
+	if localAPIURL != "" {
+		endpoint := strings.TrimRight(localAPIURL, "/") + "/bot%s/%s"
+		Bot, err = tgbotapi.NewBotAPIWithAPIEndpoint(token, endpoint)
+		log.Printf("Using local Bot API server: %s", localAPIURL)
+	} else {
+		Bot, err = tgbotapi.NewBotAPI(token)
+	}
 	if err != nil {
 		return err
 	}
 	log.Printf("Bot authorized as @%s (id=%d)", Bot.Self.UserName, Bot.Self.ID)
+
+	if err := redditfeed.Start(Bot); err != nil {
+		return err
+	}
 	log.Println("Bot started, listening for updates...")
 
 	u := tgbotapi.NewUpdate(0)
@@ -33,7 +44,7 @@ func Start() error {
 	updates := Bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		handlers.HandleUpdate(Bot, update)
+		go handlers.HandleUpdate(Bot, update)
 	}
 
 	return nil
