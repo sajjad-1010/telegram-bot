@@ -2,27 +2,24 @@ package middleware
 
 import (
 	"log"
-	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"telegram-bot/config"
+	"telegram-bot/db"
 )
 
 func IsUserMember(bot *tgbotapi.BotAPI, userID int64) bool {
-	log.Println("userId:", userID)
-	channels := config.GetEnv("REQUIRED_CHANNELS", "")
-	if channels == "" {
-		log.Println("REQUIRED_CHANNELS is empty in .env")
+	log.Printf("checking membership user_id=%d", userID)
+	channelList, err := db.ListAllRequiredChannels()
+	if err != nil {
+		log.Println("Failed to load required channels:", err)
 		return false
 	}
+	if len(channelList) == 0 {
+		log.Println("No required channels configured")
+		return true
+	}
 
-	channelList := strings.Split(channels, ",")
 	for _, ch := range channelList {
-		ch = strings.TrimSpace(ch)
-		if ch == "" {
-			continue
-		}
-
 		member, err := bot.GetChatMember(tgbotapi.GetChatMemberConfig{
 			ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
 				SuperGroupUsername: "@" + ch,

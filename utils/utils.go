@@ -30,9 +30,15 @@ func MakeForwardButton(botUsername, payload string) tgbotapi.InlineKeyboardButto
 	return tgbotapi.NewInlineKeyboardButtonURL("Open message", url)
 }
 
+type DeepLinkPayload struct {
+	MessageID    int
+	MediaGroupID string
+}
+
 func Encode(num int) string {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.LittleEndian, int64(num))
+	// bytes.Buffer never returns an error on Write
+	_ = binary.Write(buf, binary.LittleEndian, int64(num))
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
@@ -48,4 +54,29 @@ func Decode(encoded string) (int, error) {
 		return 0, errors.New("invalid binary data")
 	}
 	return int(num), nil
+}
+
+func EncodeMediaGroup(mediaGroupID string) string {
+	return "mg_" + strings.TrimSpace(mediaGroupID)
+}
+
+func ParseDeepLinkPayload(raw string) (DeepLinkPayload, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DeepLinkPayload{}, errors.New("empty deep link payload")
+	}
+
+	if strings.HasPrefix(raw, "mg_") {
+		mediaGroupID := strings.TrimSpace(strings.TrimPrefix(raw, "mg_"))
+		if mediaGroupID == "" {
+			return DeepLinkPayload{}, errors.New("empty media group payload")
+		}
+		return DeepLinkPayload{MediaGroupID: mediaGroupID}, nil
+	}
+
+	messageID, err := Decode(raw)
+	if err != nil {
+		return DeepLinkPayload{}, err
+	}
+	return DeepLinkPayload{MessageID: messageID}, nil
 }

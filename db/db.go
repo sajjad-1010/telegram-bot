@@ -30,5 +30,15 @@ func Init(dbPath string) error {
 
 	DB = db
 	log.Println("SQLite connected at", dbPath)
+
+	if err := ensureRequiredChannelsTable(); err != nil {
+		return err
+	}
+	if err := ensureAudienceContactsTable(); err != nil {
+		return err
+	}
+	if err := ensureSourceMediaGroupsTables(); err != nil {
+		return err
+	}
 	return nil
 }
