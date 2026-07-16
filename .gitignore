@@ -4,6 +4,9 @@
 *.log
 *.out
 *.test
+*.webm
+mybot
+gmybot
 bin/
 build/
 dist/
