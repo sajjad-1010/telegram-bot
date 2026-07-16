@@ -1321,7 +1321,7 @@ func sendText(bot *tgbotapi.BotAPI, chatID int64, text string) {
 }
 
 func buildDefaultMediaOptions() []state.MediaOption {
-	return []state.MediaOption{
+	mp4 := []state.MediaOption{
 		{
 			Key:      "yt_q1080",
 			Label:    "MP4 1080p",
@@ -1340,17 +1340,50 @@ func buildDefaultMediaOptions() []state.MediaOption {
 			Mode:     optionModeVideoMP4,
 			Selector: "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]",
 		},
-		{
+	}
+
+	mp4 = orderByDefaultQuality(mp4)
+
+	return append(mp4,
+		state.MediaOption{
 			Key:   optionKeyBoth,
 			Label: "MP4 + MP3",
 			Mode:  optionModeBoth,
 		},
-		{
+		state.MediaOption{
 			Key:   optionKeyMP3,
 			Label: "MP3",
 			Mode:  optionModeAudioMP3,
 		},
+	)
+}
+
+// orderByDefaultQuality moves the option matching DEFAULT_VIDEO_QUALITY to the
+// front so it reads as the recommended default. "best" (or unset/unknown) keeps
+// the natural high-to-low order.
+func orderByDefaultQuality(options []state.MediaOption) []state.MediaOption {
+	pref := strings.ToLower(strings.TrimSpace(config.GetEnv("DEFAULT_VIDEO_QUALITY", "best")))
+	if pref == "" || pref == "best" {
+		return options
 	}
+
+	wantKey := "yt_q" + pref
+	idx := -1
+	for i, opt := range options {
+		if opt.Key == wantKey {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		return options
+	}
+
+	reordered := make([]state.MediaOption, 0, len(options))
+	reordered = append(reordered, options[idx])
+	reordered = append(reordered, options[:idx]...)
+	reordered = append(reordered, options[idx+1:]...)
+	return reordered
 }
 
 func buildMediaOptionsForPlatform(platform, link string) []state.MediaOption {
