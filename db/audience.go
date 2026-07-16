@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -33,6 +34,7 @@ func ensureAudienceContactsTable() error {
 			chat_title TEXT,
 			chat_username TEXT,
 			is_bot INTEGER NOT NULL DEFAULT 0,
+			language TEXT,
 			first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (user_id, chat_id)
@@ -42,11 +44,85 @@ func ensureAudienceContactsTable() error {
 		return fmt.Errorf("create audience_contacts table: %w", err)
 	}
 
+	// Migrate older databases that predate the language column.
+	if err := ensureAudienceLanguageColumn(); err != nil {
+		return err
+	}
+
 	_, err = DB.Exec(`CREATE INDEX IF NOT EXISTS idx_audience_contacts_chat_id ON audience_contacts(chat_id)`)
 	if err != nil {
 		return fmt.Errorf("create audience_contacts chat_id index: %w", err)
 	}
 
+	return nil
+}
+
+// ensureAudienceLanguageColumn adds the language column to pre-existing tables.
+func ensureAudienceLanguageColumn() error {
+	rows, err := DB.Query(`PRAGMA table_info(audience_contacts)`)
+	if err != nil {
+		return fmt.Errorf("inspect audience_contacts columns: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			ctype      string
+			notNull    int
+			dfltValue  any
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan audience_contacts column: %w", err)
+		}
+		if name == "language" {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if _, err := DB.Exec(`ALTER TABLE audience_contacts ADD COLUMN language TEXT`); err != nil {
+		return fmt.Errorf("add audience_contacts language column: %w", err)
+	}
+	return nil
+}
+
+// GetUserLanguage returns the stored language code for a user, or "" if unset.
+func GetUserLanguage(userID int64) (string, error) {
+	if DB == nil {
+		return "", fmt.Errorf("db is not initialized")
+	}
+
+	var lang string
+	err := DB.QueryRow(`
+		SELECT COALESCE(language, '')
+		FROM audience_contacts
+		WHERE user_id = ? AND language IS NOT NULL AND language != ''
+		ORDER BY last_seen_at DESC
+		LIMIT 1
+	`, userID).Scan(&lang)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", fmt.Errorf("get user language: %w", err)
+	}
+	return lang, nil
+}
+
+// SetUserLanguage sets the language for all of a user's contact rows.
+func SetUserLanguage(userID int64, lang string) error {
+	if DB == nil {
+		return fmt.Errorf("db is not initialized")
+	}
+
+	if _, err := DB.Exec(`UPDATE audience_contacts SET language = ? WHERE user_id = ?`, lang, userID); err != nil {
+		return fmt.Errorf("set user language: %w", err)
+	}
 	return nil
 }
 
