@@ -627,14 +627,98 @@ func getConfiguredMaxDownloadSizeMB() int {
 }
 
 func downloadAndSendMP4(bot *tgbotapi.BotAPI, chatID int64, link, selector, caption string) error {
+	cacheKey := cacheKeyForLink(link)
+	mode := mp4CacheMode(selector)
+	if _, ok := trySendCachedMedia(bot, chatID, cacheKey, mode, caption); ok {
+		return nil
+	}
+
 	filePath, cleanup, err := instagram.DownloadVideoBySelector(link, selector)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
-	_, err = sendDownloadedContent(bot, chatID, filePath, caption)
-	return err
+	kind, sent, err := sendDownloadedContent(bot, chatID, filePath, caption)
+	if err != nil {
+		return err
+	}
+	cacheSentMedia(cacheKey, mode, kind, sent)
+	return nil
+}
+
+// mp4CacheMode derives a cache mode that keeps different requested video
+// qualities in separate cache slots (mp4:1080, mp4:720, ...). Unknown/empty
+// selectors fall back to the generic mp4 slot.
+func mp4CacheMode(selector string) string {
+	for _, h := range []string{"1080", "720", "480", "360", "240"} {
+		if strings.Contains(selector, "height<="+h) {
+			return db.MediaCacheModeMP4 + ":" + h
+		}
+	}
+	return db.MediaCacheModeMP4
+}
+
+// trySendCachedMedia sends a previously cached file_id if present. Returns
+// (sentMessage, true) on a successful cache hit. On an invalid-file_id error it
+// drops the stale row and returns ok=false so the caller re-downloads.
+func trySendCachedMedia(bot *tgbotapi.BotAPI, chatID int64, cacheKey, mode, caption string) (tgbotapi.Message, bool) {
+	if !mediaCacheEnabled() {
+		return tgbotapi.Message{}, false
+	}
+
+	fileID, fileType, ok, err := db.GetCachedMedia(cacheKey, mode)
+	if err != nil {
+		log.Printf("media cache lookup failed key=%s mode=%s: %v", cacheKey, mode, err)
+		return tgbotapi.Message{}, false
+	}
+	if !ok {
+		return tgbotapi.Message{}, false
+	}
+
+	var chattable tgbotapi.Chattable
+	switch fileType {
+	case "audio":
+		audio := tgbotapi.NewAudio(chatID, tgbotapi.FileID(fileID))
+		audio.Caption = caption
+		chattable = audio
+	default:
+		video := tgbotapi.NewVideo(chatID, tgbotapi.FileID(fileID))
+		video.Caption = caption
+		video.SupportsStreaming = true
+		chattable = video
+	}
+
+	sent, sendErr := bot.Send(chattable)
+	if sendErr == nil {
+		log.Printf("media cache hit key=%s mode=%s type=%s", cacheKey, mode, fileType)
+		return sent, true
+	}
+
+	if isInvalidFileIDErr(sendErr) {
+		log.Printf("media cache stale key=%s mode=%s, dropping: %v", cacheKey, mode, sendErr)
+		if delErr := db.DeleteMediaCache(cacheKey, mode); delErr != nil {
+			log.Printf("media cache delete failed key=%s mode=%s: %v", cacheKey, mode, delErr)
+		}
+		return tgbotapi.Message{}, false
+	}
+
+	log.Printf("media cache send failed (non-fileid) key=%s mode=%s: %v", cacheKey, mode, sendErr)
+	return tgbotapi.Message{}, false
+}
+
+// cacheSentMedia stores the file_id of a freshly sent video/audio for reuse.
+func cacheSentMedia(cacheKey, mode, kind string, sent tgbotapi.Message) {
+	if !mediaCacheEnabled() {
+		return
+	}
+	fileID := extractFileID(kind, sent)
+	if fileID == "" {
+		return
+	}
+	if err := db.UpsertMediaCache(cacheKey, mode, fileID, kind); err != nil {
+		log.Printf("media cache store failed key=%s mode=%s: %v", cacheKey, mode, err)
+	}
 }
 
 func sendDownloadedContents(bot *tgbotapi.BotAPI, chatID int64, filePaths []string, caption string) (contentSendSummary, error) {
@@ -643,7 +727,7 @@ func sendDownloadedContents(bot *tgbotapi.BotAPI, chatID int64, filePaths []stri
 	}
 
 	if len(filePaths) == 1 {
-		kind, err := sendDownloadedContent(bot, chatID, filePaths[0], caption)
+		kind, _, err := sendDownloadedContent(bot, chatID, filePaths[0], caption)
 		return contentSendSummary{AllPhotos: kind == "photo"}, err
 	}
 
@@ -672,7 +756,7 @@ func sendDownloadedContents(bot *tgbotapi.BotAPI, chatID int64, filePaths []stri
 		if idx == 0 {
 			itemCaption = caption
 		}
-		if _, err := sendDownloadedContent(bot, chatID, filePath, itemCaption); err != nil {
+		if _, _, err := sendDownloadedContent(bot, chatID, filePath, itemCaption); err != nil {
 			return summary, fmt.Errorf("send item %d (%s): %w", idx+1, filepath.Base(filePath), err)
 		}
 	}
@@ -709,6 +793,11 @@ func sendDownloadedMediaGroup(bot *tgbotapi.BotAPI, chatID int64, filePaths []st
 }
 
 func downloadAndSendMP3(bot *tgbotapi.BotAPI, chatID int64, link, platform, caption string) error {
+	cacheKey := cacheKeyForLink(link)
+	if _, ok := trySendCachedMedia(bot, chatID, cacheKey, db.MediaCacheModeMP3, caption); ok {
+		return nil
+	}
+
 	log.Printf("mp3 download start chat_id=%d platform=%s link=%s", chatID, platform, link)
 	filePath, cleanup, err := instagram.DownloadMP3(link)
 	if err != nil {
@@ -727,10 +816,12 @@ func downloadAndSendMP3(bot *tgbotapi.BotAPI, chatID int64, link, platform, capt
 	}
 
 	log.Printf("mp3 download complete chat_id=%d platform=%s file=%s title=%q", chatID, platform, filepath.Base(filePath), audioTitle)
-	if err := sendAudioFile(bot, chatID, filePath, caption, audioTitle); err != nil {
+	sent, err := sendAudioFile(bot, chatID, filePath, caption, audioTitle)
+	if err != nil {
 		log.Printf("mp3 send failed chat_id=%d platform=%s file=%s err=%v", chatID, platform, filepath.Base(filePath), err)
 		return err
 	}
+	cacheSentMedia(cacheKey, db.MediaCacheModeMP3, "audio", sent)
 	log.Printf("mp3 send complete chat_id=%d platform=%s file=%s", chatID, platform, filepath.Base(filePath))
 	return nil
 }
@@ -742,7 +833,7 @@ func downloadAndSendInstagramAttachedAudio(bot *tgbotapi.BotAPI, chatID int64, l
 	}
 	defer cleanup()
 
-	if err := sendAudioFile(bot, chatID, filePath, caption, title); err != nil {
+	if _, err := sendAudioFile(bot, chatID, filePath, caption, title); err != nil {
 		return err
 	}
 
@@ -772,85 +863,143 @@ func checkTelegramFileSize(filePath string) error {
 	return nil
 }
 
-func sendDownloadedContent(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) (string, error) {
+func sendDownloadedContent(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) (string, tgbotapi.Message, error) {
 	if err := checkTelegramFileSize(filePath); err != nil {
-		return "", err
+		return "", tgbotapi.Message{}, err
 	}
 	ext := strings.ToLower(filepath.Ext(filePath))
 
 	if isImageExt(ext) {
 		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
 		photo.Caption = caption
-		_, err := bot.Send(photo)
+		sent, err := bot.Send(photo)
 		if err == nil {
 			log.Printf("content sent chat_id=%d kind=photo file=%s", chatID, filepath.Base(filePath))
 		}
-		return "photo", err
+		return "photo", sent, err
 	}
 
 	if isAudioExt(ext) {
-		if err := sendAudioFile(bot, chatID, filePath, caption, ""); err != nil {
-			return "audio", err
+		sent, err := sendAudioFile(bot, chatID, filePath, caption, "")
+		if err != nil {
+			return "audio", tgbotapi.Message{}, err
 		}
 		log.Printf("content sent chat_id=%d kind=audio file=%s", chatID, filepath.Base(filePath))
-		return "audio", nil
+		return "audio", sent, nil
 	}
 
 	if isVideoExt(ext) {
-		if err := sendVideoWithFallback(bot, chatID, filePath, caption); err != nil {
-			return "video", err
+		sent, err := sendVideoWithFallback(bot, chatID, filePath, caption)
+		if err != nil {
+			return "video", tgbotapi.Message{}, err
 		}
 		log.Printf("content sent chat_id=%d kind=video file=%s", chatID, filepath.Base(filePath))
-		return "video", nil
+		return "video", sent, nil
 	}
 
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 	doc.Caption = caption
-	_, err := bot.Send(doc)
+	sent, err := bot.Send(doc)
 	if err == nil {
 		log.Printf("content sent chat_id=%d kind=document file=%s", chatID, filepath.Base(filePath))
 	}
-	return "document", err
+	return "document", sent, err
 }
 
-func sendVideoWithFallback(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) error {
-	if err := sendVideo(bot, chatID, filePath, caption); err == nil {
-		return nil
+func sendVideoWithFallback(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) (tgbotapi.Message, error) {
+	if sent, err := sendVideo(bot, chatID, filePath, caption); err == nil {
+		return sent, nil
 	}
 
 	normalizedPath, normCleanup, normErr := instagram.NormalizeForTelegram(filePath)
 	if normErr == nil {
 		defer normCleanup()
-		if retryErr := sendVideo(bot, chatID, normalizedPath, caption); retryErr == nil {
-			return nil
+		if sent, retryErr := sendVideo(bot, chatID, normalizedPath, caption); retryErr == nil {
+			return sent, nil
 		}
 	}
 
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 	doc.Caption = caption
-	_, err := bot.Send(doc)
-	return err
+	return bot.Send(doc)
 }
 
-func sendVideo(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) error {
+func sendVideo(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) (tgbotapi.Message, error) {
 	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 	video.Caption = caption
 	video.SupportsStreaming = true
-	_, err := bot.Send(video)
-	return err
+	return bot.Send(video)
 }
 
-func sendAudioFile(bot *tgbotapi.BotAPI, chatID int64, filePath, caption, title string) error {
+func sendAudioFile(bot *tgbotapi.BotAPI, chatID int64, filePath, caption, title string) (tgbotapi.Message, error) {
 	if err := checkTelegramFileSize(filePath); err != nil {
-		return err
+		return tgbotapi.Message{}, err
 	}
 	audio := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(filePath))
 	audio.Caption = caption
 	if strings.TrimSpace(title) != "" {
 		audio.Title = title
 	}
-	_, err := bot.Send(audio)
-	return err
+	return bot.Send(audio)
+}
+
+// extractFileID pulls the reusable Telegram file_id from a sent message for the
+// given content kind. Returns "" if unavailable.
+func extractFileID(kind string, msg tgbotapi.Message) string {
+	switch kind {
+	case "video":
+		if msg.Video != nil {
+			return msg.Video.FileID
+		}
+		if msg.Document != nil {
+			return msg.Document.FileID
+		}
+	case "audio":
+		if msg.Audio != nil {
+			return msg.Audio.FileID
+		}
+	case "photo":
+		if len(msg.Photo) > 0 {
+			return msg.Photo[len(msg.Photo)-1].FileID
+		}
+	case "document":
+		if msg.Document != nil {
+			return msg.Document.FileID
+		}
+	}
+	return ""
+}
+
+// isInvalidFileIDErr reports whether a Telegram send error indicates the cached
+// file_id is no longer valid, so the cache row should be dropped.
+func isInvalidFileIDErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "wrong file identifier") ||
+		strings.Contains(msg, "wrong remote file identifier") ||
+		strings.Contains(msg, "wrong file_id") {
+		return true
+	}
+	return strings.Contains(msg, "file_id") && strings.Contains(msg, "invalid")
+}
+
+// mediaCacheEnabled reports whether file_id caching is turned on.
+func mediaCacheEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(config.GetEnv("MEDIA_CACHE_ENABLED", "true")), "true")
+}
+
+// cacheKeyForLink normalizes a link for use as a media_cache key by stripping
+// query and fragment junk (e.g. ?utm=...). Conservative: path is untouched.
+func cacheKeyForLink(link string) string {
+	u, err := url.Parse(strings.TrimSpace(link))
+	if err != nil || u == nil {
+		return strings.TrimSpace(link)
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }
 
 func isImageExt(ext string) bool {

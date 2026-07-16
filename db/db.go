@@ -43,5 +43,8 @@ func Init(dbPath string) error {
 	if err := ensureDownloadsTable(); err != nil {
 		return err
 	}
+	if err := ensureMediaCacheTable(); err != nil {
+		return err
+	}
 	return nil
 }
