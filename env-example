@@ -47,3 +47,9 @@ REDDIT_FEED_POLL_MINUTES=15
 
 # Video tools
 FFMPEG_BIN=
+# Default MP4 quality shown first in the picker: best | 1080 | 720 | 480
+DEFAULT_VIDEO_QUALITY=best
+# Reuse Telegram file_id for repeat downloads (skip re-download). true/false.
+MEDIA_CACHE_ENABLED=true
+# Default UI language for new users: en or ru
+DEFAULT_LANG=en
