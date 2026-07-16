@@ -308,6 +308,20 @@ func extractSupportedMediaLink(text string) (string, string, bool) {
 			}
 			continue
 		}
+
+		if host == "twitter.com" || host == "www.twitter.com" || host == "mobile.twitter.com" || host == "x.com" || host == "www.x.com" {
+			if path != "" {
+				return u.String(), "Twitter", true
+			}
+			continue
+		}
+
+		if host == "pinterest.com" || strings.HasSuffix(host, ".pinterest.com") || host == "pin.it" {
+			if path != "" {
+				return u.String(), "Pinterest", true
+			}
+			continue
+		}
 	}
 
 	return "", "", false
@@ -1195,7 +1209,9 @@ func handleHelp(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	b.WriteString("• Instagram (reel / post / story / TV)\n")
 	b.WriteString("• TikTok\n")
 	b.WriteString("• YouTube (video / shorts / live)\n")
-	b.WriteString("• Reddit\n\n")
+	b.WriteString("• Reddit\n")
+	b.WriteString("• Twitter / X\n")
+	b.WriteString("• Pinterest\n\n")
 	b.WriteString("For some links you'll be asked to pick a format (MP4 / MP3 / both).\n")
 	b.WriteString("Private file links open via /start and deliver the file to you.")
 
