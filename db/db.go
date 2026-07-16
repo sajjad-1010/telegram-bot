@@ -40,5 +40,8 @@ func Init(dbPath string) error {
 	if err := ensureSourceMediaGroupsTables(); err != nil {
 		return err
 	}
+	if err := ensureDownloadsTable(); err != nil {
+		return err
+	}
 	return nil
 }

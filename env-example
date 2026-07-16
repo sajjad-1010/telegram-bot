@@ -5,6 +5,8 @@ ADMIN_USER_ID=
 ADMIN_USERNAME=
 BASE_REQUIRED_CHANNEL=MurkoffProjectsleep
 DB_PATH=data/bot.db
+# Max media requests per user per hour (0 = disabled). Admins bypass.
+RATE_LIMIT_PER_HOUR=30
 
 # Redis
 REDIS_ADDR=localhost:6379
