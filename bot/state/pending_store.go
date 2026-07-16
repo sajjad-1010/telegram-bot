@@ -35,12 +35,21 @@ type PendingStore struct {
 
 	ramMu sync.RWMutex
 	ram   map[int64]PendingRequest
+
+	rlMu sync.Mutex
+	rl   map[string]ramRateEntry
+}
+
+type ramRateEntry struct {
+	count     int
+	expiresAt time.Time
 }
 
 func NewPendingStoreFromEnv() *PendingStore {
 	store := &PendingStore{
 		ttl: 15 * time.Minute,
 		ram: make(map[int64]PendingRequest),
+		rl:  make(map[string]ramRateEntry),
 	}
 
 	ttlMinutes := strings.TrimSpace(config.GetEnv("REDIS_PENDING_TTL_MINUTES", ""))
@@ -200,4 +209,70 @@ func (s *PendingStore) deleteRAM(chatID int64) {
 
 func (s *PendingStore) redisKey(chatID int64) string {
 	return fmt.Sprintf("pending:chat:%d", chatID)
+}
+
+// AllowRequest reports whether userID may make another request within the current
+// hourly window given limit (max requests/hour). A non-positive limit means unlimited.
+// It increments the counter as a side effect. Falls back to an in-RAM counter when
+// Redis is unavailable.
+func (s *PendingStore) AllowRequest(userID int64, limit int) bool {
+	if limit <= 0 {
+		return true
+	}
+
+	window := time.Now().UTC().Format("2006010215")
+	key := fmt.Sprintf("rl:%d:%s", userID, window)
+
+	if count, ok := s.tryRedisIncr(key, time.Hour); ok {
+		return count <= int64(limit)
+	}
+
+	return s.ramIncrAllow(key, limit)
+}
+
+func (s *PendingStore) tryRedisIncr(key string, ttl time.Duration) (int64, bool) {
+	if s.redisClient == nil {
+		return 0, false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	count, err := s.redisClient.Incr(ctx, key).Result()
+	if err != nil {
+		log.Printf("Redis INCR failed (%v). Using RAM fallback for rate limit.", err)
+		return 0, false
+	}
+
+	if count == 1 {
+		if err := s.redisClient.Expire(ctx, key, ttl).Err(); err != nil {
+			log.Printf("Redis EXPIRE failed for rate-limit key (%v).", err)
+		}
+	}
+
+	return count, true
+}
+
+func (s *PendingStore) ramIncrAllow(key string, limit int) bool {
+	s.rlMu.Lock()
+	defer s.rlMu.Unlock()
+
+	now := time.Now()
+	entry, ok := s.rl[key]
+	if !ok || now.After(entry.expiresAt) {
+		entry = ramRateEntry{count: 0, expiresAt: now.Add(time.Hour)}
+		s.pruneRAMRateLocked(now)
+	}
+
+	entry.count++
+	s.rl[key] = entry
+	return entry.count <= limit
+}
+
+func (s *PendingStore) pruneRAMRateLocked(now time.Time) {
+	for k, v := range s.rl {
+		if now.After(v.expiresAt) {
+			delete(s.rl, k)
+		}
+	}
 }

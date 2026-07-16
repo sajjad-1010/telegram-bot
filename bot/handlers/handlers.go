@@ -16,6 +16,7 @@ import (
 	"telegram-bot/bot/state"
 	"telegram-bot/config"
 	"telegram-bot/db"
+	"telegram-bot/internal/i18n"
 	"telegram-bot/providers/instagram"
 	"telegram-bot/utils"
 )
@@ -37,6 +38,7 @@ const (
 	pendingKindMediaAuto   = "media_auto"
 
 	callbackMediaOptionPrefix = "media_opt:"
+	callbackLangSetPrefix     = "lang_set:"
 	optionKeyMP4              = "mp4"
 	optionKeyMP3              = "mp3"
 	optionKeyBoth             = "both"
@@ -111,6 +113,15 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		case "req_list", "req_add", "req_remove":
 			handleAdminRequiredChannelsCommand(bot, update.Message)
 			return
+		case "help":
+			handleHelp(bot, update.Message)
+			return
+		case "stats":
+			handleStats(bot, update.Message)
+			return
+		case "lang":
+			handleLang(bot, update.Message)
+			return
 		default:
 			return
 		}
@@ -126,12 +137,16 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 	}
 	log.Printf("media request detected platform=%s chat_id=%d link=%s", platform, update.Message.Chat.ID, link)
 
+	if !allowMediaRequest(update.Message.From) {
+		sendText(bot, update.Message.Chat.ID, i18n.T(userLang(update.Message.From.ID), i18n.KeyRateLimited))
+		return
+	}
+
 	handleMediaRequest(bot, update.Message.Chat.ID, update.Message.From.ID, link, platform)
 }
 
 func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	text := "Open the private link of a file to receive it."
-	reply := tgbotapi.NewMessage(msg.Chat.ID, text)
+	reply := tgbotapi.NewMessage(msg.Chat.ID, i18n.T(userLang(msg.From.ID), i18n.KeyStart))
 	if _, err := bot.Send(reply); err != nil {
 		log.Println("Error sending start message:", err)
 	}
@@ -139,10 +154,10 @@ func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, userID int64, args string) {
 	log.Println("handleStartWithArgs called")
+	lang := userLang(userID)
 
 	if _, err := utils.ParseDeepLinkPayload(args); err != nil {
-		text := "Invalid link. Please open a valid file link."
-		reply := tgbotapi.NewMessage(chatID, text)
+		reply := tgbotapi.NewMessage(chatID, i18n.T(lang, i18n.KeyInvalidLink))
 		if _, sendErr := bot.Send(reply); sendErr != nil {
 			log.Println("Error sending invalid-link message:", sendErr)
 		}
@@ -159,7 +174,7 @@ func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, userID int64, args 
 
 	if err := executeForwardCopy(bot, chatID, args); err != nil {
 		log.Println("Error forwarding message:", err)
-		sendText(bot, chatID, "Failed to fetch file. Try again later.")
+		sendText(bot, chatID, i18n.T(lang, i18n.KeyFetchFailed))
 	}
 }
 
@@ -297,6 +312,20 @@ func extractSupportedMediaLink(text string) (string, string, bool) {
 			}
 			continue
 		}
+
+		if host == "twitter.com" || host == "www.twitter.com" || host == "mobile.twitter.com" || host == "x.com" || host == "www.x.com" {
+			if path != "" {
+				return u.String(), "Twitter", true
+			}
+			continue
+		}
+
+		if host == "pinterest.com" || strings.HasSuffix(host, ".pinterest.com") || host == "pin.it" {
+			if path != "" {
+				return u.String(), "Pinterest", true
+			}
+			continue
+		}
 	}
 
 	return "", "", false
@@ -397,7 +426,7 @@ func ensureMembershipOrQueue(bot *tgbotapi.BotAPI, chatID int64, userID int64, r
 
 	storePendingDownload(chatID, req)
 	log.Printf("membership required chat_id=%d user_id=%d kind=%s platform=%s", chatID, userID, req.Kind, req.Platform)
-	if err := middleware.SendMembershipRequiredPrompt(bot, chatID, "Join required channels first, then tap Check membership."); err != nil {
+	if err := middleware.SendMembershipRequiredPrompt(bot, chatID, i18n.T(userLang(userID), i18n.KeyMembershipRequired)); err != nil {
 		log.Println("Error sending membership prompt:", err)
 	}
 	return false
@@ -409,34 +438,35 @@ func executePendingRequest(bot *tgbotapi.BotAPI, chatID int64, userID int64, req
 	case pendingKindForward:
 		if err := executeForwardCopy(bot, chatID, req.Payload); err != nil {
 			log.Println("Error forwarding message:", err)
-			sendText(bot, chatID, "Failed to fetch file. Try again later.")
+			sendText(bot, chatID, i18n.T(userLang(userID), i18n.KeyFetchFailed))
 		}
 	case pendingKindMediaChoice:
-		sendMediaOptionsPrompt(bot, chatID, req)
+		sendMediaOptionsPrompt(bot, chatID, userID, req)
 	case pendingKindMediaAuto:
-		executeAutoMediaDownload(bot, chatID, req.Payload, req.Platform, req.HasAudio)
+		executeAutoMediaDownload(bot, chatID, userID, req.Payload, req.Platform, req.HasAudio)
 	default:
-		sendText(bot, chatID, "Unknown pending request. Please send the link again.")
+		sendText(bot, chatID, i18n.T(userLang(userID), i18n.KeyUnknownPending))
 	}
 }
 
-func sendMediaOptionsPrompt(bot *tgbotapi.BotAPI, chatID int64, req state.PendingRequest) {
+func sendMediaOptionsPrompt(bot *tgbotapi.BotAPI, chatID int64, userID int64, req state.PendingRequest) {
 	if len(req.Options) == 0 {
 		req.Options = buildDefaultMediaOptions()
 	}
 	storePendingDownload(chatID, req)
 	log.Printf("media options prompt chat_id=%d platform=%s options=%d", chatID, req.Platform, len(req.Options))
 
-	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Choose format for %s:", req.Platform))
+	msg := tgbotapi.NewMessage(chatID, i18n.Tf(userLang(userID), i18n.KeyChooseFormat, req.Platform))
 	msg.ReplyMarkup = buildMediaOptionsKeyboard(req.Options)
 	if _, err := bot.Send(msg); err != nil {
 		log.Println("Error sending media options prompt:", err)
 	}
 }
 
-func executeAutoMediaDownload(bot *tgbotapi.BotAPI, chatID int64, link, platform string, hasAudio bool) {
+func executeAutoMediaDownload(bot *tgbotapi.BotAPI, chatID int64, userID int64, link, platform string, hasAudio bool) {
+	lang := userLang(userID)
 	log.Printf("auto media download start chat_id=%d platform=%s has_audio=%t link=%s", chatID, platform, hasAudio, link)
-	waitMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Downloading from %s, please wait...", platform))
+	waitMsg := tgbotapi.NewMessage(chatID, i18n.Tf(lang, i18n.KeyDownloading, platform))
 	sentWaitMsg, err := bot.Send(waitMsg)
 	if err != nil {
 		log.Println("Error sending progress message:", err)
@@ -447,7 +477,8 @@ func executeAutoMediaDownload(bot *tgbotapi.BotAPI, chatID int64, link, platform
 	contentPaths, cleanup, err := instagram.DownloadBestContents(link)
 	if err != nil {
 		log.Printf("%s content download error for %s: %v", platform, link, err)
-		sendText(bot, chatID, userFacingDownloadError(err, platform, "content"))
+		sendText(bot, chatID, userFacingDownloadError(lang, err, platform, "content"))
+		logDownloadEvent(userID, platform, link, "auto", db.DownloadStatusFailed)
 		return
 	}
 	defer cleanup()
@@ -456,7 +487,8 @@ func executeAutoMediaDownload(bot *tgbotapi.BotAPI, chatID int64, link, platform
 	summary, sendErr := sendDownloadedContents(bot, chatID, contentPaths, caption)
 	if sendErr != nil {
 		log.Println("Error sending content:", sendErr)
-		sendText(bot, chatID, userFacingDownloadError(sendErr, platform, "content"))
+		sendText(bot, chatID, userFacingDownloadError(lang, sendErr, platform, "content"))
+		logDownloadEvent(userID, platform, link, "auto", db.DownloadStatusFailed)
 		return
 	}
 
@@ -470,12 +502,14 @@ func executeAutoMediaDownload(bot *tgbotapi.BotAPI, chatID int64, link, platform
 			log.Println("Optional Instagram attached audio send failed:", err)
 		}
 	}
+	logDownloadEvent(userID, platform, link, "auto", db.DownloadStatusOK)
 	log.Printf("auto media download complete chat_id=%d platform=%s files=%d all_photos=%t", chatID, platform, len(contentPaths), summary.AllPhotos)
 }
 
-func executeMediaOption(bot *tgbotapi.BotAPI, chatID int64, req state.PendingRequest, optionKey string) {
+func executeMediaOption(bot *tgbotapi.BotAPI, chatID int64, userID int64, req state.PendingRequest, optionKey string) {
+	lang := userLang(userID)
 	log.Printf("media option selected chat_id=%d platform=%s option=%s", chatID, req.Platform, optionKey)
-	waitMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Downloading from %s, please wait...", req.Platform))
+	waitMsg := tgbotapi.NewMessage(chatID, i18n.Tf(lang, i18n.KeyDownloading, req.Platform))
 	sentWaitMsg, err := bot.Send(waitMsg)
 	if err != nil {
 		log.Println("Error sending progress message:", err)
@@ -486,7 +520,7 @@ func executeMediaOption(bot *tgbotapi.BotAPI, chatID int64, req state.PendingReq
 	caption := formatCaption(bot)
 	selected, ok := findMediaOption(req.Options, optionKey)
 	if !ok {
-		sendText(bot, chatID, "Unknown download option.")
+		sendText(bot, chatID, i18n.T(lang, i18n.KeyUnknownOption))
 		return
 	}
 
@@ -494,79 +528,99 @@ func executeMediaOption(bot *tgbotapi.BotAPI, chatID int64, req state.PendingReq
 	case optionModeVideoMP4:
 		if err := downloadAndSendMP4(bot, chatID, req.Payload, selected.Selector, caption); err != nil {
 			log.Println("MP4 download/send error:", err)
-			sendText(bot, chatID, userFacingDownloadError(err, req.Platform, "mp4"))
+			sendText(bot, chatID, userFacingDownloadError(lang, err, req.Platform, "mp4"))
+			logDownloadEvent(userID, req.Platform, req.Payload, "mp4", db.DownloadStatusFailed)
+		} else {
+			logDownloadEvent(userID, req.Platform, req.Payload, "mp4", db.DownloadStatusOK)
 		}
 	case optionModeAudioMP3:
 		if err := downloadAndSendMP3(bot, chatID, req.Payload, req.Platform, caption); err != nil {
 			log.Println("MP3 download/send error:", err)
-			sendText(bot, chatID, userFacingDownloadError(err, req.Platform, "mp3"))
+			sendText(bot, chatID, userFacingDownloadError(lang, err, req.Platform, "mp3"))
+			logDownloadEvent(userID, req.Platform, req.Payload, "mp3", db.DownloadStatusFailed)
+		} else {
+			logDownloadEvent(userID, req.Platform, req.Payload, "mp3", db.DownloadStatusOK)
 		}
 	case optionModeBoth:
-		if err := downloadAndSendMP4(bot, chatID, req.Payload, selected.Selector, caption); err != nil {
-			log.Println("MP4 part failed in MP4+MP3:", err)
-			sendText(bot, chatID, userFacingDownloadError(err, req.Platform, "mp4"))
+		mp4Err := downloadAndSendMP4(bot, chatID, req.Payload, selected.Selector, caption)
+		if mp4Err != nil {
+			log.Println("MP4 part failed in MP4+MP3:", mp4Err)
+			sendText(bot, chatID, userFacingDownloadError(lang, mp4Err, req.Platform, "mp4"))
 		}
-		if err := downloadAndSendMP3(bot, chatID, req.Payload, req.Platform, caption); err != nil {
-			log.Println("MP3 part failed in MP4+MP3:", err)
-			sendText(bot, chatID, userFacingDownloadError(err, req.Platform, "mp3"))
+		mp3Err := downloadAndSendMP3(bot, chatID, req.Payload, req.Platform, caption)
+		if mp3Err != nil {
+			log.Println("MP3 part failed in MP4+MP3:", mp3Err)
+			sendText(bot, chatID, userFacingDownloadError(lang, mp3Err, req.Platform, "mp3"))
+		}
+		if mp4Err == nil && mp3Err == nil {
+			logDownloadEvent(userID, req.Platform, req.Payload, "both", db.DownloadStatusOK)
+		} else {
+			logDownloadEvent(userID, req.Platform, req.Payload, "both", db.DownloadStatusFailed)
 		}
 	default:
-		sendText(bot, chatID, "Unknown download option.")
+		sendText(bot, chatID, i18n.T(lang, i18n.KeyUnknownOption))
 	}
 }
 
-func userFacingDownloadError(err error, platform, mode string) string {
+func logDownloadEvent(userID int64, platform, link, mode, status string) {
+	if err := db.LogDownload(userID, platform, link, mode, status); err != nil {
+		log.Printf("failed to log download event user_id=%d platform=%s status=%s: %v", userID, platform, status, err)
+	}
+}
+
+func userFacingDownloadError(lang string, err error, platform, mode string) string {
 	if err == nil {
-		return "Download failed. Please try again later."
+		return i18n.T(lang, i18n.KeyErrGeneric)
 	}
 
 	raw := err.Error()
 	maxMB := getConfiguredMaxDownloadSizeMB()
+	m := strings.ToLower(strings.TrimSpace(mode))
 
 	if strings.Contains(raw, "file too large:") {
 		if strings.Contains(raw, "Telegram limit is") {
 			limitMB := getTelegramUploadLimitBytes() / 1024 / 1024
-			switch strings.ToLower(strings.TrimSpace(mode)) {
+			switch m {
 			case "mp4":
-				return fmt.Sprintf("%s video exceeds Telegram's %dMB upload limit. Please choose a lower quality.", platform, limitMB)
+				return i18n.Tf(lang, i18n.KeyErrVideoTelegramLimit, platform, limitMB)
 			case "mp3":
-				return fmt.Sprintf("%s audio exceeds Telegram's %dMB upload limit.", platform, limitMB)
+				return i18n.Tf(lang, i18n.KeyErrAudioTelegramLimit, platform, limitMB)
 			default:
-				return fmt.Sprintf("The file exceeds Telegram's %dMB upload limit.", limitMB)
+				return i18n.Tf(lang, i18n.KeyErrFileTelegramLimit, limitMB)
 			}
 		}
-		switch strings.ToLower(strings.TrimSpace(mode)) {
+		switch m {
 		case "mp4":
-			return fmt.Sprintf("%s video is larger than the current %dMB limit. Choose a lower quality or use MP3.", platform, maxMB)
+			return i18n.Tf(lang, i18n.KeyErrVideoSizeLimit, platform, maxMB)
 		case "mp3":
-			return fmt.Sprintf("%s audio is larger than the current %dMB limit.", platform, maxMB)
+			return i18n.Tf(lang, i18n.KeyErrAudioSizeLimit, platform, maxMB)
 		default:
-			return fmt.Sprintf("The downloaded file is larger than the current %dMB limit.", maxMB)
+			return i18n.Tf(lang, i18n.KeyErrFileSizeLimit, maxMB)
 		}
 	}
 
 	if strings.Contains(strings.ToLower(raw), "command timed out") {
-		switch strings.ToLower(strings.TrimSpace(mode)) {
+		switch m {
 		case "mp4":
-			return fmt.Sprintf("%s download took too long and timed out. Try a lower quality.", platform)
+			return i18n.Tf(lang, i18n.KeyErrVideoTimeout, platform)
 		case "mp3":
-			return fmt.Sprintf("%s audio download took too long and timed out. Please try again later.", platform)
+			return i18n.Tf(lang, i18n.KeyErrAudioTimeout, platform)
 		default:
-			return "Download took too long and timed out. Please try again later."
+			return i18n.T(lang, i18n.KeyErrTimeout)
 		}
 	}
 
 	if strings.Contains(raw, "mp3 download requires ffmpeg/ffprobe") {
-		return "MP3 conversion is not available right now because ffmpeg/ffprobe is not configured on the server."
+		return i18n.T(lang, i18n.KeyErrNoFfmpeg)
 	}
 
-	switch strings.ToLower(strings.TrimSpace(mode)) {
+	switch m {
 	case "mp4":
-		return fmt.Sprintf("Failed to send %s video. Please try another quality.", platform)
+		return i18n.Tf(lang, i18n.KeyErrVideoSendFailed, platform)
 	case "mp3":
-		return fmt.Sprintf("Failed to send %s audio. Please try again later.", platform)
+		return i18n.Tf(lang, i18n.KeyErrAudioSendFailed, platform)
 	default:
-		return "Download failed. Please try again later."
+		return i18n.T(lang, i18n.KeyErrGeneric)
 	}
 }
 
@@ -580,14 +634,98 @@ func getConfiguredMaxDownloadSizeMB() int {
 }
 
 func downloadAndSendMP4(bot *tgbotapi.BotAPI, chatID int64, link, selector, caption string) error {
+	cacheKey := cacheKeyForLink(link)
+	mode := mp4CacheMode(selector)
+	if _, ok := trySendCachedMedia(bot, chatID, cacheKey, mode, caption); ok {
+		return nil
+	}
+
 	filePath, cleanup, err := instagram.DownloadVideoBySelector(link, selector)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
-	_, err = sendDownloadedContent(bot, chatID, filePath, caption)
-	return err
+	kind, sent, err := sendDownloadedContent(bot, chatID, filePath, caption)
+	if err != nil {
+		return err
+	}
+	cacheSentMedia(cacheKey, mode, kind, sent)
+	return nil
+}
+
+// mp4CacheMode derives a cache mode that keeps different requested video
+// qualities in separate cache slots (mp4:1080, mp4:720, ...). Unknown/empty
+// selectors fall back to the generic mp4 slot.
+func mp4CacheMode(selector string) string {
+	for _, h := range []string{"1080", "720", "480", "360", "240"} {
+		if strings.Contains(selector, "height<="+h) {
+			return db.MediaCacheModeMP4 + ":" + h
+		}
+	}
+	return db.MediaCacheModeMP4
+}
+
+// trySendCachedMedia sends a previously cached file_id if present. Returns
+// (sentMessage, true) on a successful cache hit. On an invalid-file_id error it
+// drops the stale row and returns ok=false so the caller re-downloads.
+func trySendCachedMedia(bot *tgbotapi.BotAPI, chatID int64, cacheKey, mode, caption string) (tgbotapi.Message, bool) {
+	if !mediaCacheEnabled() {
+		return tgbotapi.Message{}, false
+	}
+
+	fileID, fileType, ok, err := db.GetCachedMedia(cacheKey, mode)
+	if err != nil {
+		log.Printf("media cache lookup failed key=%s mode=%s: %v", cacheKey, mode, err)
+		return tgbotapi.Message{}, false
+	}
+	if !ok {
+		return tgbotapi.Message{}, false
+	}
+
+	var chattable tgbotapi.Chattable
+	switch fileType {
+	case "audio":
+		audio := tgbotapi.NewAudio(chatID, tgbotapi.FileID(fileID))
+		audio.Caption = caption
+		chattable = audio
+	default:
+		video := tgbotapi.NewVideo(chatID, tgbotapi.FileID(fileID))
+		video.Caption = caption
+		video.SupportsStreaming = true
+		chattable = video
+	}
+
+	sent, sendErr := bot.Send(chattable)
+	if sendErr == nil {
+		log.Printf("media cache hit key=%s mode=%s type=%s", cacheKey, mode, fileType)
+		return sent, true
+	}
+
+	if isInvalidFileIDErr(sendErr) {
+		log.Printf("media cache stale key=%s mode=%s, dropping: %v", cacheKey, mode, sendErr)
+		if delErr := db.DeleteMediaCache(cacheKey, mode); delErr != nil {
+			log.Printf("media cache delete failed key=%s mode=%s: %v", cacheKey, mode, delErr)
+		}
+		return tgbotapi.Message{}, false
+	}
+
+	log.Printf("media cache send failed (non-fileid) key=%s mode=%s: %v", cacheKey, mode, sendErr)
+	return tgbotapi.Message{}, false
+}
+
+// cacheSentMedia stores the file_id of a freshly sent video/audio for reuse.
+func cacheSentMedia(cacheKey, mode, kind string, sent tgbotapi.Message) {
+	if !mediaCacheEnabled() {
+		return
+	}
+	fileID := extractFileID(kind, sent)
+	if fileID == "" {
+		return
+	}
+	if err := db.UpsertMediaCache(cacheKey, mode, fileID, kind); err != nil {
+		log.Printf("media cache store failed key=%s mode=%s: %v", cacheKey, mode, err)
+	}
 }
 
 func sendDownloadedContents(bot *tgbotapi.BotAPI, chatID int64, filePaths []string, caption string) (contentSendSummary, error) {
@@ -596,7 +734,7 @@ func sendDownloadedContents(bot *tgbotapi.BotAPI, chatID int64, filePaths []stri
 	}
 
 	if len(filePaths) == 1 {
-		kind, err := sendDownloadedContent(bot, chatID, filePaths[0], caption)
+		kind, _, err := sendDownloadedContent(bot, chatID, filePaths[0], caption)
 		return contentSendSummary{AllPhotos: kind == "photo"}, err
 	}
 
@@ -625,7 +763,7 @@ func sendDownloadedContents(bot *tgbotapi.BotAPI, chatID int64, filePaths []stri
 		if idx == 0 {
 			itemCaption = caption
 		}
-		if _, err := sendDownloadedContent(bot, chatID, filePath, itemCaption); err != nil {
+		if _, _, err := sendDownloadedContent(bot, chatID, filePath, itemCaption); err != nil {
 			return summary, fmt.Errorf("send item %d (%s): %w", idx+1, filepath.Base(filePath), err)
 		}
 	}
@@ -662,6 +800,11 @@ func sendDownloadedMediaGroup(bot *tgbotapi.BotAPI, chatID int64, filePaths []st
 }
 
 func downloadAndSendMP3(bot *tgbotapi.BotAPI, chatID int64, link, platform, caption string) error {
+	cacheKey := cacheKeyForLink(link)
+	if _, ok := trySendCachedMedia(bot, chatID, cacheKey, db.MediaCacheModeMP3, caption); ok {
+		return nil
+	}
+
 	log.Printf("mp3 download start chat_id=%d platform=%s link=%s", chatID, platform, link)
 	filePath, cleanup, err := instagram.DownloadMP3(link)
 	if err != nil {
@@ -680,10 +823,12 @@ func downloadAndSendMP3(bot *tgbotapi.BotAPI, chatID int64, link, platform, capt
 	}
 
 	log.Printf("mp3 download complete chat_id=%d platform=%s file=%s title=%q", chatID, platform, filepath.Base(filePath), audioTitle)
-	if err := sendAudioFile(bot, chatID, filePath, caption, audioTitle); err != nil {
+	sent, err := sendAudioFile(bot, chatID, filePath, caption, audioTitle)
+	if err != nil {
 		log.Printf("mp3 send failed chat_id=%d platform=%s file=%s err=%v", chatID, platform, filepath.Base(filePath), err)
 		return err
 	}
+	cacheSentMedia(cacheKey, db.MediaCacheModeMP3, "audio", sent)
 	log.Printf("mp3 send complete chat_id=%d platform=%s file=%s", chatID, platform, filepath.Base(filePath))
 	return nil
 }
@@ -695,7 +840,7 @@ func downloadAndSendInstagramAttachedAudio(bot *tgbotapi.BotAPI, chatID int64, l
 	}
 	defer cleanup()
 
-	if err := sendAudioFile(bot, chatID, filePath, caption, title); err != nil {
+	if _, err := sendAudioFile(bot, chatID, filePath, caption, title); err != nil {
 		return err
 	}
 
@@ -725,85 +870,143 @@ func checkTelegramFileSize(filePath string) error {
 	return nil
 }
 
-func sendDownloadedContent(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) (string, error) {
+func sendDownloadedContent(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) (string, tgbotapi.Message, error) {
 	if err := checkTelegramFileSize(filePath); err != nil {
-		return "", err
+		return "", tgbotapi.Message{}, err
 	}
 	ext := strings.ToLower(filepath.Ext(filePath))
 
 	if isImageExt(ext) {
 		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
 		photo.Caption = caption
-		_, err := bot.Send(photo)
+		sent, err := bot.Send(photo)
 		if err == nil {
 			log.Printf("content sent chat_id=%d kind=photo file=%s", chatID, filepath.Base(filePath))
 		}
-		return "photo", err
+		return "photo", sent, err
 	}
 
 	if isAudioExt(ext) {
-		if err := sendAudioFile(bot, chatID, filePath, caption, ""); err != nil {
-			return "audio", err
+		sent, err := sendAudioFile(bot, chatID, filePath, caption, "")
+		if err != nil {
+			return "audio", tgbotapi.Message{}, err
 		}
 		log.Printf("content sent chat_id=%d kind=audio file=%s", chatID, filepath.Base(filePath))
-		return "audio", nil
+		return "audio", sent, nil
 	}
 
 	if isVideoExt(ext) {
-		if err := sendVideoWithFallback(bot, chatID, filePath, caption); err != nil {
-			return "video", err
+		sent, err := sendVideoWithFallback(bot, chatID, filePath, caption)
+		if err != nil {
+			return "video", tgbotapi.Message{}, err
 		}
 		log.Printf("content sent chat_id=%d kind=video file=%s", chatID, filepath.Base(filePath))
-		return "video", nil
+		return "video", sent, nil
 	}
 
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 	doc.Caption = caption
-	_, err := bot.Send(doc)
+	sent, err := bot.Send(doc)
 	if err == nil {
 		log.Printf("content sent chat_id=%d kind=document file=%s", chatID, filepath.Base(filePath))
 	}
-	return "document", err
+	return "document", sent, err
 }
 
-func sendVideoWithFallback(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) error {
-	if err := sendVideo(bot, chatID, filePath, caption); err == nil {
-		return nil
+func sendVideoWithFallback(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) (tgbotapi.Message, error) {
+	if sent, err := sendVideo(bot, chatID, filePath, caption); err == nil {
+		return sent, nil
 	}
 
 	normalizedPath, normCleanup, normErr := instagram.NormalizeForTelegram(filePath)
 	if normErr == nil {
 		defer normCleanup()
-		if retryErr := sendVideo(bot, chatID, normalizedPath, caption); retryErr == nil {
-			return nil
+		if sent, retryErr := sendVideo(bot, chatID, normalizedPath, caption); retryErr == nil {
+			return sent, nil
 		}
 	}
 
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 	doc.Caption = caption
-	_, err := bot.Send(doc)
-	return err
+	return bot.Send(doc)
 }
 
-func sendVideo(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) error {
+func sendVideo(bot *tgbotapi.BotAPI, chatID int64, filePath, caption string) (tgbotapi.Message, error) {
 	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 	video.Caption = caption
 	video.SupportsStreaming = true
-	_, err := bot.Send(video)
-	return err
+	return bot.Send(video)
 }
 
-func sendAudioFile(bot *tgbotapi.BotAPI, chatID int64, filePath, caption, title string) error {
+func sendAudioFile(bot *tgbotapi.BotAPI, chatID int64, filePath, caption, title string) (tgbotapi.Message, error) {
 	if err := checkTelegramFileSize(filePath); err != nil {
-		return err
+		return tgbotapi.Message{}, err
 	}
 	audio := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(filePath))
 	audio.Caption = caption
 	if strings.TrimSpace(title) != "" {
 		audio.Title = title
 	}
-	_, err := bot.Send(audio)
-	return err
+	return bot.Send(audio)
+}
+
+// extractFileID pulls the reusable Telegram file_id from a sent message for the
+// given content kind. Returns "" if unavailable.
+func extractFileID(kind string, msg tgbotapi.Message) string {
+	switch kind {
+	case "video":
+		if msg.Video != nil {
+			return msg.Video.FileID
+		}
+		if msg.Document != nil {
+			return msg.Document.FileID
+		}
+	case "audio":
+		if msg.Audio != nil {
+			return msg.Audio.FileID
+		}
+	case "photo":
+		if len(msg.Photo) > 0 {
+			return msg.Photo[len(msg.Photo)-1].FileID
+		}
+	case "document":
+		if msg.Document != nil {
+			return msg.Document.FileID
+		}
+	}
+	return ""
+}
+
+// isInvalidFileIDErr reports whether a Telegram send error indicates the cached
+// file_id is no longer valid, so the cache row should be dropped.
+func isInvalidFileIDErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "wrong file identifier") ||
+		strings.Contains(msg, "wrong remote file identifier") ||
+		strings.Contains(msg, "wrong file_id") {
+		return true
+	}
+	return strings.Contains(msg, "file_id") && strings.Contains(msg, "invalid")
+}
+
+// mediaCacheEnabled reports whether file_id caching is turned on.
+func mediaCacheEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(config.GetEnv("MEDIA_CACHE_ENABLED", "true")), "true")
+}
+
+// cacheKeyForLink normalizes a link for use as a media_cache key by stripping
+// query and fragment junk (e.g. ?utm=...). Conservative: path is untouched.
+func cacheKeyForLink(link string) string {
+	u, err := url.Parse(strings.TrimSpace(link))
+	if err != nil || u == nil {
+		return strings.TrimSpace(link)
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }
 
 func isImageExt(ext string) bool {
@@ -920,6 +1123,8 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
 		handleMembershipCheckCallback(bot, cb)
 	case strings.HasPrefix(cb.Data, callbackMediaOptionPrefix):
 		handleMediaOptionCallback(bot, cb)
+	case strings.HasPrefix(cb.Data, callbackLangSetPrefix):
+		handleLangSetCallback(bot, cb)
 	}
 }
 
@@ -933,14 +1138,15 @@ func handleMembershipCheckCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQu
 		chatID = cb.Message.Chat.ID
 	}
 
+	lang := userLang(cb.From.ID)
 	req, ok := getPendingDownload(chatID)
 	if !ok {
-		sendText(bot, chatID, "No pending request found. Please send the link again.")
+		sendText(bot, chatID, i18n.T(lang, i18n.KeyNoPendingRequest))
 		return
 	}
 
 	if !middleware.IsUserMember(bot, cb.From.ID) {
-		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, "You are still not a member of all required channels."); err != nil {
+		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, i18n.T(lang, i18n.KeyStillNotMember)); err != nil {
 			log.Println("Error sending membership prompt:", err)
 		}
 		return
@@ -964,14 +1170,15 @@ func handleMediaOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery)
 		chatID = cb.Message.Chat.ID
 	}
 
+	lang := userLang(cb.From.ID)
 	req, ok := getPendingDownload(chatID)
 	if !ok || req.Kind != pendingKindMediaChoice {
-		sendText(bot, chatID, "No pending media selection found. Send the link again.")
+		sendText(bot, chatID, i18n.T(lang, i18n.KeyNoPendingSelection))
 		return
 	}
 
 	if !middleware.IsUserMember(bot, cb.From.ID) {
-		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, "Join required channels first, then tap Check membership."); err != nil {
+		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, i18n.T(lang, i18n.KeyMembershipRequired)); err != nil {
 			log.Println("Error sending membership prompt:", err)
 		}
 		return
@@ -983,7 +1190,7 @@ func handleMediaOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery)
 
 	deletePendingDownload(chatID)
 	option := strings.TrimPrefix(cb.Data, callbackMediaOptionPrefix)
-	executeMediaOption(bot, chatID, req, option)
+	executeMediaOption(bot, chatID, cb.From.ID, req, option)
 }
 
 func storePendingDownload(chatID int64, req state.PendingRequest) {
@@ -1131,6 +1338,147 @@ func handleAdminRequiredChannelsCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Mess
 	}
 }
 
+func allowMediaRequest(user *tgbotapi.User) bool {
+	if user == nil {
+		return true
+	}
+	if isAdmin(user) {
+		return true
+	}
+
+	limit := 0
+	if raw := strings.TrimSpace(config.GetEnv("RATE_LIMIT_PER_HOUR", "")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	if limit <= 0 {
+		return true
+	}
+
+	if pendingStore == nil {
+		pendingStore = state.NewPendingStoreFromEnv()
+	}
+	return pendingStore.AllowRequest(user.ID, limit)
+}
+
+func handleHelp(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	lang := userLang(msg.From.ID)
+
+	var b strings.Builder
+	b.WriteString(i18n.T(lang, i18n.KeyHelpIntro))
+	b.WriteString("\n\n")
+	b.WriteString(i18n.T(lang, i18n.KeyHelpPlatforms))
+	b.WriteString("\n\n")
+	b.WriteString(i18n.T(lang, i18n.KeyHelpPickFormat))
+	b.WriteString("\n")
+	b.WriteString(i18n.T(lang, i18n.KeyHelpPrivateLinks))
+
+	if isAdmin(msg.From) {
+		b.WriteString("\n\n")
+		b.WriteString(i18n.T(lang, i18n.KeyHelpAdminHeader))
+		b.WriteString("\n")
+		b.WriteString(i18n.T(lang, i18n.KeyHelpAdminStats))
+		b.WriteString("\n")
+		b.WriteString(i18n.T(lang, i18n.KeyHelpAdminChannels))
+	}
+
+	sendText(bot, msg.Chat.ID, b.String())
+}
+
+func handleLang(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	arg := strings.ToLower(strings.TrimSpace(msg.CommandArguments()))
+	if arg != "" && i18n.Supported(arg) {
+		applyUserLanguage(bot, msg.Chat.ID, msg.From.ID, i18n.Normalize(arg))
+		return
+	}
+
+	prompt := tgbotapi.NewMessage(msg.Chat.ID, i18n.T(userLang(msg.From.ID), i18n.KeyChooseLanguage))
+	prompt.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🇬🇧 English", callbackLangSetPrefix+i18n.LangEN),
+			tgbotapi.NewInlineKeyboardButtonData("🇷🇺 Русский", callbackLangSetPrefix+i18n.LangRU),
+		),
+	)
+	if _, err := bot.Send(prompt); err != nil {
+		log.Println("Error sending language prompt:", err)
+	}
+}
+
+func handleLangSetCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
+	if _, err := bot.Request(tgbotapi.NewCallback(cb.ID, "")); err != nil {
+		log.Println("Error answering language callback:", err)
+	}
+
+	chatID := cb.From.ID
+	if cb.Message != nil {
+		chatID = cb.Message.Chat.ID
+		deleteMessage(bot, chatID, cb.Message.MessageID)
+	}
+
+	lang := i18n.Normalize(strings.TrimPrefix(cb.Data, callbackLangSetPrefix))
+	applyUserLanguage(bot, chatID, cb.From.ID, lang)
+}
+
+// applyUserLanguage persists the chosen language and confirms in that language.
+func applyUserLanguage(bot *tgbotapi.BotAPI, chatID, userID int64, lang string) {
+	if err := db.SetUserLanguage(userID, lang); err != nil {
+		log.Printf("set user language failed user_id=%d lang=%s: %v", userID, lang, err)
+	}
+	sendText(bot, chatID, i18n.T(lang, i18n.KeyLangChanged))
+}
+
+func handleStats(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	if !isAdmin(msg.From) {
+		return
+	}
+
+	var b strings.Builder
+	b.WriteString("Bot statistics\n\n")
+
+	if users, err := db.CountUniqueUsers(); err != nil {
+		log.Println("stats: count unique users failed:", err)
+		b.WriteString("Users: unavailable\n")
+	} else {
+		b.WriteString(fmt.Sprintf("Users: %d\n", users))
+	}
+
+	if chats, err := db.CountChatsByType(); err != nil {
+		log.Println("stats: count chats by type failed:", err)
+	} else if len(chats) > 0 {
+		b.WriteString("Chats:\n")
+		for _, c := range chats {
+			label := c.ChatType
+			if label == "" {
+				label = "unknown"
+			}
+			b.WriteString(fmt.Sprintf("  • %s: %d\n", label, c.Count))
+		}
+	}
+
+	b.WriteString("\n")
+	total, totalErr := db.CountDownloads()
+	if totalErr != nil {
+		log.Println("stats: count downloads failed:", totalErr)
+		b.WriteString("Downloads: unavailable")
+	} else {
+		okCount, _ := db.CountDownloadsByStatus(db.DownloadStatusOK)
+		failCount, _ := db.CountDownloadsByStatus(db.DownloadStatusFailed)
+		b.WriteString(fmt.Sprintf("Downloads: %d total (%d ok, %d failed)\n", total, okCount, failCount))
+
+		if perPlatform, err := db.DownloadsByPlatform(); err != nil {
+			log.Println("stats: downloads by platform failed:", err)
+		} else if len(perPlatform) > 0 {
+			b.WriteString("By platform:\n")
+			for _, p := range perPlatform {
+				b.WriteString(fmt.Sprintf("  • %s: %d\n", p.Platform, p.Count))
+			}
+		}
+	}
+
+	sendText(bot, msg.Chat.ID, strings.TrimRight(b.String(), "\n"))
+}
+
 func isAdmin(user *tgbotapi.User) bool {
 	if user == nil {
 		return false
@@ -1176,8 +1524,21 @@ func sendText(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	}
 }
 
+// userLang resolves the UI language for a user: stored preference, else
+// DEFAULT_LANG, normalized to a supported code.
+func userLang(userID int64) string {
+	if userID != 0 {
+		if lang, err := db.GetUserLanguage(userID); err != nil {
+			log.Printf("get user language failed user_id=%d: %v", userID, err)
+		} else if lang != "" {
+			return i18n.Normalize(lang)
+		}
+	}
+	return i18n.Normalize(config.GetEnv("DEFAULT_LANG", i18n.LangEN))
+}
+
 func buildDefaultMediaOptions() []state.MediaOption {
-	return []state.MediaOption{
+	mp4 := []state.MediaOption{
 		{
 			Key:      "yt_q1080",
 			Label:    "MP4 1080p",
@@ -1196,17 +1557,50 @@ func buildDefaultMediaOptions() []state.MediaOption {
 			Mode:     optionModeVideoMP4,
 			Selector: "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]",
 		},
-		{
+	}
+
+	mp4 = orderByDefaultQuality(mp4)
+
+	return append(mp4,
+		state.MediaOption{
 			Key:   optionKeyBoth,
 			Label: "MP4 + MP3",
 			Mode:  optionModeBoth,
 		},
-		{
+		state.MediaOption{
 			Key:   optionKeyMP3,
 			Label: "MP3",
 			Mode:  optionModeAudioMP3,
 		},
+	)
+}
+
+// orderByDefaultQuality moves the option matching DEFAULT_VIDEO_QUALITY to the
+// front so it reads as the recommended default. "best" (or unset/unknown) keeps
+// the natural high-to-low order.
+func orderByDefaultQuality(options []state.MediaOption) []state.MediaOption {
+	pref := strings.ToLower(strings.TrimSpace(config.GetEnv("DEFAULT_VIDEO_QUALITY", "best")))
+	if pref == "" || pref == "best" {
+		return options
 	}
+
+	wantKey := "yt_q" + pref
+	idx := -1
+	for i, opt := range options {
+		if opt.Key == wantKey {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		return options
+	}
+
+	reordered := make([]state.MediaOption, 0, len(options))
+	reordered = append(reordered, options[idx])
+	reordered = append(reordered, options[:idx]...)
+	reordered = append(reordered, options[idx+1:]...)
+	return reordered
 }
 
 func buildMediaOptionsForPlatform(platform, link string) []state.MediaOption {
