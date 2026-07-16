@@ -32,6 +32,12 @@ func Start() error {
 		return err
 	}
 	log.Printf("Bot authorized as @%s (id=%d)", Bot.Self.UserName, Bot.Self.ID)
+	log.Printf("config: rate_limit_per_hour=%s media_cache=%s default_quality=%s default_lang=%s",
+		config.GetEnv("RATE_LIMIT_PER_HOUR", "30"),
+		config.GetEnv("MEDIA_CACHE_ENABLED", "true"),
+		config.GetEnv("DEFAULT_VIDEO_QUALITY", "best"),
+		config.GetEnv("DEFAULT_LANG", "en"),
+	)
 
 	if err := redditfeed.Start(Bot); err != nil {
 		return err
