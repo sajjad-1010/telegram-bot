@@ -138,6 +138,7 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 	log.Printf("media request detected platform=%s chat_id=%d link=%s", platform, update.Message.Chat.ID, link)
 
 	if !allowMediaRequest(update.Message.From) {
+		log.Printf("rate limit rejected user_id=%d chat_id=%d platform=%s", update.Message.From.ID, update.Message.Chat.ID, platform)
 		sendText(bot, update.Message.Chat.ID, i18n.T(userLang(update.Message.From.ID), i18n.KeyRateLimited))
 		return
 	}
@@ -725,7 +726,9 @@ func cacheSentMedia(cacheKey, mode, kind string, sent tgbotapi.Message) {
 	}
 	if err := db.UpsertMediaCache(cacheKey, mode, fileID, kind); err != nil {
 		log.Printf("media cache store failed key=%s mode=%s: %v", cacheKey, mode, err)
+		return
 	}
+	log.Printf("media cache store key=%s mode=%s type=%s", cacheKey, mode, kind)
 }
 
 func sendDownloadedContents(bot *tgbotapi.BotAPI, chatID int64, filePaths []string, caption string) (contentSendSummary, error) {
@@ -1424,6 +1427,8 @@ func handleLangSetCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
 func applyUserLanguage(bot *tgbotapi.BotAPI, chatID, userID int64, lang string) {
 	if err := db.SetUserLanguage(userID, lang); err != nil {
 		log.Printf("set user language failed user_id=%d lang=%s: %v", userID, lang, err)
+	} else {
+		log.Printf("user language set user_id=%d lang=%s", userID, lang)
 	}
 	sendText(bot, chatID, i18n.T(lang, i18n.KeyLangChanged))
 }
