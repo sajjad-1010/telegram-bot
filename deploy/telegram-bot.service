@@ -1,0 +1,21 @@
+[Unit]
+Description=Stash Telegram media-download bot
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=shoker-jon
+Group=shoker-jon
+WorkingDirectory=/home/shoker-jon/Documents/telegram-bot
+EnvironmentFile=/home/shoker-jon/Documents/telegram-bot/.env
+Environment=PATH=/home/shoker-jon/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/shoker-jon/Documents/telegram-bot/bin/telegram-bot
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
