@@ -147,7 +147,22 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 }
 
 func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	reply := tgbotapi.NewMessage(msg.Chat.ID, i18n.T(userLang(msg.From.ID), i18n.KeyStart))
+	welcome := i18n.T(userLang(msg.From.ID), i18n.KeyWelcome)
+
+	gifPath := config.GetEnv("WELCOME_GIF_PATH", "logo/stash-electric.gif")
+	if _, statErr := os.Stat(gifPath); statErr == nil {
+		anim := tgbotapi.NewAnimation(msg.Chat.ID, tgbotapi.FilePath(gifPath))
+		anim.Caption = welcome
+		anim.ParseMode = tgbotapi.ModeMarkdown
+		if _, err := bot.Send(anim); err != nil {
+			log.Println("Error sending start animation, falling back to text:", err)
+		} else {
+			return
+		}
+	}
+
+	reply := tgbotapi.NewMessage(msg.Chat.ID, welcome)
+	reply.ParseMode = tgbotapi.ModeMarkdown
 	if _, err := bot.Send(reply); err != nil {
 		log.Println("Error sending start message:", err)
 	}

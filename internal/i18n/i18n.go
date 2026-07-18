@@ -16,6 +16,7 @@ const (
 // checking instead of stringly-typed lookups.
 const (
 	KeyStart                 = "start"
+	KeyWelcome               = "welcome"
 	KeyInvalidLink           = "invalid_link"
 	KeyFetchFailed           = "fetch_failed"
 	KeyUnknownPending        = "unknown_pending"
@@ -57,6 +58,19 @@ const (
 var translations = map[string]map[string]string{
 	LangEN: {
 		KeyStart:              "Open the private link of a file to receive it.",
+		KeyWelcome: "👋 Welcome! I download media from social links.\n\n" +
+			"📥 *How to use:* just send me a link.\n\n" +
+			"*Supported:*\n" +
+			"• Instagram — reel / post / story / TV\n" +
+			"• TikTok\n" +
+			"• YouTube — video / shorts / live\n" +
+			"• Reddit\n" +
+			"• Twitter / X\n" +
+			"• Pinterest\n\n" +
+			"🎞 For some links you pick the format (MP4 / MP3).\n\n" +
+			"*Commands:*\n" +
+			"• /help — full guide\n" +
+			"• /lang — change language (English / Русский)",
 		KeyInvalidLink:        "Invalid link. Please open a valid file link.",
 		KeyFetchFailed:        "Failed to fetch file. Try again later.",
 		KeyUnknownPending:     "Unknown pending request. Please send the link again.",
@@ -95,6 +109,19 @@ var translations = map[string]map[string]string{
 	},
 	LangRU: {
 		KeyStart:              "Откройте приватную ссылку файла, чтобы получить его.",
+		KeyWelcome: "👋 Привет! Я скачиваю медиа по ссылкам из соцсетей.\n\n" +
+			"📥 *Как пользоваться:* просто отправьте мне ссылку.\n\n" +
+			"*Поддерживается:*\n" +
+			"• Instagram — reel / пост / истории / TV\n" +
+			"• TikTok\n" +
+			"• YouTube — видео / shorts / трансляции\n" +
+			"• Reddit\n" +
+			"• Twitter / X\n" +
+			"• Pinterest\n\n" +
+			"🎞 Для некоторых ссылок нужно выбрать формат (MP4 / MP3).\n\n" +
+			"*Команды:*\n" +
+			"• /help — полное руководство\n" +
+			"• /lang — сменить язык (English / Русский)",
 		KeyInvalidLink:        "Неверная ссылка. Пожалуйста, откройте корректную ссылку на файл.",
 		KeyFetchFailed:        "Не удалось получить файл. Попробуйте позже.",
 		KeyUnknownPending:     "Неизвестный запрос. Пожалуйста, отправьте ссылку ещё раз.",
