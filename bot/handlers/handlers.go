@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -39,6 +40,7 @@ const (
 
 	callbackMediaOptionPrefix = "media_opt:"
 	callbackLangSetPrefix     = "lang_set:"
+	callbackResendPrefix      = "resend:"
 	optionKeyMP4              = "mp4"
 	optionKeyMP3              = "mp3"
 	optionKeyBoth             = "both"
@@ -195,10 +197,13 @@ func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, userID int64, args 
 		return
 	}
 
-	if err := executeForwardCopy(bot, chatID, args); err != nil {
+	copied, err := executeForwardCopy(bot, chatID, args)
+	if err != nil {
 		log.Println("Error forwarding message:", err)
 		sendText(bot, chatID, i18n.T(lang, i18n.KeyFetchFailed))
+		return
 	}
+	sendSaveNoticeAndScheduleDelete(bot, chatID, args, copied)
 }
 
 func makeLinkForNewMessage(bot *tgbotapi.BotAPI, messageID int) error {
@@ -449,7 +454,7 @@ func ensureMembershipOrQueue(bot *tgbotapi.BotAPI, chatID int64, userID int64, r
 
 	storePendingDownload(chatID, req)
 	log.Printf("membership required chat_id=%d user_id=%d kind=%s platform=%s", chatID, userID, req.Kind, req.Platform)
-	if err := middleware.SendMembershipRequiredPrompt(bot, chatID, i18n.T(userLang(userID), i18n.KeyMembershipRequired)); err != nil {
+	if err := middleware.SendMembershipRequiredPrompt(bot, chatID, userID, i18n.T(userLang(userID), i18n.KeyMembershipRequired)); err != nil {
 		log.Println("Error sending membership prompt:", err)
 	}
 	return false
@@ -459,10 +464,13 @@ func executePendingRequest(bot *tgbotapi.BotAPI, chatID int64, userID int64, req
 	log.Printf("execute pending request chat_id=%d user_id=%d kind=%s platform=%s", chatID, userID, req.Kind, req.Platform)
 	switch req.Kind {
 	case pendingKindForward:
-		if err := executeForwardCopy(bot, chatID, req.Payload); err != nil {
+		copied, err := executeForwardCopy(bot, chatID, req.Payload)
+		if err != nil {
 			log.Println("Error forwarding message:", err)
 			sendText(bot, chatID, i18n.T(userLang(userID), i18n.KeyFetchFailed))
+			return
 		}
+		sendSaveNoticeAndScheduleDelete(bot, chatID, req.Payload, copied)
 	case pendingKindMediaChoice:
 		sendMediaOptionsPrompt(bot, chatID, userID, req)
 	case pendingKindMediaAuto:
@@ -1065,70 +1073,179 @@ func formatCaption(bot *tgbotapi.BotAPI) string {
 	return fmt.Sprintf("\U0001FA76 @%s \U0001F49C", bot.Self.UserName)
 }
 
-func executeForwardCopy(bot *tgbotapi.BotAPI, chatID int64, encodedArg string) error {
+// executeForwardCopy copies the source-group post into the user's chat and
+// returns the IDs of the copies, so the caller can delete them later.
+func executeForwardCopy(bot *tgbotapi.BotAPI, chatID int64, encodedArg string) ([]int, error) {
 	payload, err := utils.ParseDeepLinkPayload(encodedArg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if payload.MediaGroupID != "" {
 		return copySourceMediaGroup(bot, chatID, payload.MediaGroupID)
 	}
 	if payload.MessageID <= 0 {
-		return fmt.Errorf("invalid message payload")
+		return nil, fmt.Errorf("invalid message payload")
 	}
 
 	forward := tgbotapi.NewCopyMessage(chatID, forwardFromChatID, payload.MessageID)
-	_, err = bot.CopyMessage(forward)
-	return err
+	sent, err := bot.CopyMessage(forward)
+	if err != nil {
+		return nil, err
+	}
+	return []int{sent.MessageID}, nil
 }
 
-func copySourceMediaGroup(bot *tgbotapi.BotAPI, chatID int64, mediaGroupID string) error {
+func copySourceMediaGroup(bot *tgbotapi.BotAPI, chatID int64, mediaGroupID string) ([]int, error) {
 	messageIDs, err := db.GetSourceMediaGroupMessageIDs(mediaGroupID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(messageIDs) == 0 {
-		return fmt.Errorf("source media group is empty")
+		return nil, fmt.Errorf("source media group is empty")
 	}
 
 	log.Printf("copy source media group chat_id=%d media_group_id=%s items=%d", chatID, mediaGroupID, len(messageIDs))
 
 	if len(messageIDs) == 1 {
 		forward := tgbotapi.NewCopyMessage(chatID, forwardFromChatID, messageIDs[0])
-		_, err = bot.CopyMessage(forward)
-		return err
+		sent, err := bot.CopyMessage(forward)
+		if err != nil {
+			return nil, err
+		}
+		return []int{sent.MessageID}, nil
 	}
 
-	if err := requestCopyMessages(bot, chatID, forwardFromChatID, messageIDs); err == nil {
-		return nil
+	if copied, err := requestCopyMessages(bot, chatID, forwardFromChatID, messageIDs); err == nil {
+		return copied, nil
 	} else {
 		log.Printf("copyMessages failed for media_group_id=%s, falling back to sequential copy: %v", mediaGroupID, err)
 	}
 
+	var copied []int
 	for _, messageID := range messageIDs {
 		forward := tgbotapi.NewCopyMessage(chatID, forwardFromChatID, messageID)
-		if _, err := bot.CopyMessage(forward); err != nil {
-			return fmt.Errorf("sequential copy failed for message_id=%d: %w", messageID, err)
+		sent, err := bot.CopyMessage(forward)
+		if err != nil {
+			return copied, fmt.Errorf("sequential copy failed for message_id=%d: %w", messageID, err)
 		}
+		copied = append(copied, sent.MessageID)
 	}
-	return nil
+	return copied, nil
 }
 
-func requestCopyMessages(bot *tgbotapi.BotAPI, chatID, fromChatID int64, messageIDs []int) error {
+func requestCopyMessages(bot *tgbotapi.BotAPI, chatID, fromChatID int64, messageIDs []int) ([]int, error) {
 	if len(messageIDs) == 0 {
-		return fmt.Errorf("message_ids is empty")
+		return nil, fmt.Errorf("message_ids is empty")
 	}
 
 	params := make(tgbotapi.Params)
 	params.AddNonZero64("chat_id", chatID)
 	params.AddNonZero64("from_chat_id", fromChatID)
 	if err := params.AddInterface("message_ids", messageIDs); err != nil {
-		return err
+		return nil, err
 	}
 
-	_, err := bot.MakeRequest("copyMessages", params)
-	return err
+	resp, err := bot.MakeRequest("copyMessages", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var sent []tgbotapi.MessageID
+	if err := json.Unmarshal(resp.Result, &sent); err != nil {
+		return nil, fmt.Errorf("decode copyMessages result: %w", err)
+	}
+
+	copied := make([]int, 0, len(sent))
+	for _, m := range sent {
+		copied = append(copied, m.MessageID)
+	}
+	return copied, nil
+}
+
+// forwardIntEnv reads a positive integer setting, falling back on any problem.
+func forwardIntEnv(key string, fallback int) int {
+	if raw := strings.TrimSpace(config.GetEnv(key, "")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
+}
+
+// sendSaveNoticeAndScheduleDelete posts the bilingual "save it before it goes"
+// notice carrying a resend button, then removes the copied post after the
+// configured delay. The notice itself is kept so the button stays clickable.
+func sendSaveNoticeAndScheduleDelete(bot *tgbotapi.BotAPI, chatID int64, encodedArg string, copied []int) {
+	noticeSeconds := forwardIntEnv("FORWARD_NOTICE_SECONDS", 30)
+	notice := fmt.Sprintf(
+		"⏳ این پیام بعد از %d ثانیه پاک می‌شود، لطفاً ذخیره‌اش کنید.\n"+
+			"⏳ This message will be deleted after %d seconds, please save it.",
+		noticeSeconds, noticeSeconds,
+	)
+
+	msg := tgbotapi.NewMessage(chatID, notice)
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🔁 ارسال دوباره / Send again",
+				callbackResendPrefix+encodedArg,
+			),
+		),
+	)
+	if _, err := bot.Send(msg); err != nil {
+		log.Println("Error sending save notice:", err)
+	}
+
+	if len(copied) == 0 {
+		return
+	}
+
+	delay := time.Duration(forwardIntEnv("FORWARD_DELETE_SECONDS", 60)) * time.Second
+	log.Printf("scheduled delete chat_id=%d messages=%d in=%s", chatID, len(copied), delay)
+	go func() {
+		time.Sleep(delay)
+		for _, messageID := range copied {
+			deleteMessage(bot, chatID, messageID)
+		}
+		log.Printf("auto-deleted forwarded post chat_id=%d messages=%d", chatID, len(copied))
+	}()
+}
+
+// handleResendCallback re-runs the forward-copy flow for the same source post.
+func handleResendCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
+	chatID := callbackChatID(cb)
+	if chatID == 0 {
+		return
+	}
+
+	if _, err := bot.Request(tgbotapi.NewCallback(cb.ID, "")); err != nil {
+		log.Println("Error answering resend callback:", err)
+	}
+
+	lang := userLang(cb.From.ID)
+	if !middleware.IsUserMember(bot, cb.From.ID) {
+		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, cb.From.ID, i18n.T(lang, i18n.KeyMembershipRequired)); err != nil {
+			log.Println("Error sending membership prompt:", err)
+		}
+		return
+	}
+
+	// Drop the old notice so repeated resends do not pile up.
+	if cb.Message != nil {
+		deleteMessage(bot, chatID, cb.Message.MessageID)
+	}
+
+	encodedArg := strings.TrimPrefix(cb.Data, callbackResendPrefix)
+	log.Printf("resend requested chat_id=%d user_id=%d", chatID, cb.From.ID)
+
+	copied, err := executeForwardCopy(bot, chatID, encodedArg)
+	if err != nil {
+		log.Println("Error resending message:", err)
+		sendText(bot, chatID, i18n.T(lang, i18n.KeyFetchFailed))
+		return
+	}
+	sendSaveNoticeAndScheduleDelete(bot, chatID, encodedArg, copied)
 }
 
 func deleteMessage(bot *tgbotapi.BotAPI, chatID int64, messageID int) {
@@ -1150,6 +1267,8 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
 		handleMediaOptionCallback(bot, cb)
 	case strings.HasPrefix(cb.Data, callbackLangSetPrefix):
 		handleLangSetCallback(bot, cb)
+	case strings.HasPrefix(cb.Data, callbackResendPrefix):
+		handleResendCallback(bot, cb)
 	}
 }
 
@@ -1171,7 +1290,7 @@ func handleMembershipCheckCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQu
 	}
 
 	if !middleware.IsUserMember(bot, cb.From.ID) {
-		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, i18n.T(lang, i18n.KeyStillNotMember)); err != nil {
+		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, cb.From.ID, i18n.T(lang, i18n.KeyStillNotMember)); err != nil {
 			log.Println("Error sending membership prompt:", err)
 		}
 		return
@@ -1203,7 +1322,7 @@ func handleMediaOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery)
 	}
 
 	if !middleware.IsUserMember(bot, cb.From.ID) {
-		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, i18n.T(lang, i18n.KeyMembershipRequired)); err != nil {
+		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, cb.From.ID, i18n.T(lang, i18n.KeyMembershipRequired)); err != nil {
 			log.Println("Error sending membership prompt:", err)
 		}
 		return
