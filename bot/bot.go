@@ -13,6 +13,8 @@ import (
 var Bot *tgbotapi.BotAPI
 
 func Start() error {
+	handlers.Init()
+
 	token := config.GetEnv("BOT_TOKEN", "")
 	if token == "" {
 		return logError("BOT_TOKEN is not set")
@@ -31,6 +33,11 @@ func Start() error {
 	if err != nil {
 		return err
 	}
+	if strings.EqualFold(strings.TrimSpace(config.GetEnv("TELEGRAM_DEBUG", "")), "true") {
+		Bot.Debug = true
+		log.Println("Telegram API debug logging enabled (every request/response is logged)")
+	}
+
 	log.Printf("Bot authorized as @%s (id=%d)", Bot.Self.UserName, Bot.Self.ID)
 	log.Printf("config: rate_limit_per_hour=%s media_cache=%s default_quality=%s default_lang=%s",
 		config.GetEnv("RATE_LIMIT_PER_HOUR", "30"),

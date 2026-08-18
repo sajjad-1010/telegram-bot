@@ -50,7 +50,9 @@ const (
 	sourceMediaGroupDebounce = 1500 * time.Millisecond
 )
 
-func init() {
+// Init wires up env-derived state. Must be called after config.LoadEnv(),
+// so it is an explicit call rather than a package init().
+func Init() {
 	pendingStore = state.NewPendingStoreFromEnv()
 
 	chatIDStr := config.GetEnv("FORWARD_FROM_CHAT_ID", "")
@@ -149,6 +151,8 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	welcome := i18n.T(userLang(msg.From.ID), i18n.KeyWelcome)
 
+	log.Printf("handleStart chat_id=%d user_id=%d message_id=%d", msg.Chat.ID, msg.From.ID, msg.MessageID)
+
 	gifPath := config.GetEnv("WELCOME_GIF_PATH", "logo/stash-electric.gif")
 	if _, statErr := os.Stat(gifPath); statErr == nil {
 		anim := tgbotapi.NewAnimation(msg.Chat.ID, tgbotapi.FilePath(gifPath))
@@ -157,6 +161,7 @@ func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		if _, err := bot.Send(anim); err != nil {
 			log.Println("Error sending start animation, falling back to text:", err)
 		} else {
+			log.Printf("welcome sent as animation chat_id=%d", msg.Chat.ID)
 			return
 		}
 	}
@@ -165,7 +170,9 @@ func handleStart(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	reply.ParseMode = tgbotapi.ModeMarkdown
 	if _, err := bot.Send(reply); err != nil {
 		log.Println("Error sending start message:", err)
+		return
 	}
+	log.Printf("welcome sent as text chat_id=%d", msg.Chat.ID)
 }
 
 func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, userID int64, args string) {
