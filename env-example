@@ -58,5 +58,11 @@ DEFAULT_VIDEO_QUALITY=best
 MEDIA_CACHE_ENABLED=true
 # Default UI language for new users: en or ru
 DEFAULT_LANG=en
+# Deep-linked group posts: seconds quoted in the "save it" notice, and how long
+# until the copied post is actually deleted. Keep them equal so the notice is
+# truthful; they are separate only because the two were specified apart.
+FORWARD_NOTICE_SECONDS=30
+FORWARD_DELETE_SECONDS=60
+
 # GIF/animation shown with the /start welcome message (empty = text only)
 WELCOME_GIF_PATH=logo/stash-electric.gif
