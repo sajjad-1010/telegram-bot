@@ -836,13 +836,14 @@ func shouldUseNoPlaylist(link string) bool {
 }
 
 func appendInstagramCookiesArgs(args []string, link string) []string {
-	if !isInstagramLink(link) {
-		return args
-	}
-
-	cookiesFromBrowser := strings.TrimSpace(config.GetEnv("INSTAGRAM_COOKIES_FROM_BROWSER", ""))
-	if cookiesFromBrowser != "" {
-		return append(args, "--cookies-from-browser", cookiesFromBrowser)
+	// A browser cookie jar is Instagram-specific (configured for the IG login).
+	// A cookies file is applied to every platform (X/Twitter, YouTube, etc.)
+	// so that login-gated or sensitive posts are downloadable too.
+	if isInstagramLink(link) {
+		cookiesFromBrowser := strings.TrimSpace(config.GetEnv("INSTAGRAM_COOKIES_FROM_BROWSER", ""))
+		if cookiesFromBrowser != "" {
+			return append(args, "--cookies-from-browser", cookiesFromBrowser)
+		}
 	}
 
 	cookiesFile := strings.TrimSpace(config.GetEnv("INSTAGRAM_COOKIES_FILE", ""))
