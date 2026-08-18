@@ -2,19 +2,22 @@ package middleware
 
 import (
 	"fmt"
+	"log"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"telegram-bot/db"
 	"telegram-bot/utils"
 )
 
 const CheckMembershipCallbackData = "check_membership"
 
-func SendMembershipRequiredPrompt(bot *tgbotapi.BotAPI, chatID int64, text string) error {
-	channels, err := db.ListAllRequiredChannels()
+// SendMembershipRequiredPrompt shows join buttons only for the channels the
+// user still has to join, so already-joined ones are not offered again.
+func SendMembershipRequiredPrompt(bot *tgbotapi.BotAPI, chatID int64, userID int64, text string) error {
+	channels, err := MissingChannels(bot, userID)
 	if err != nil {
 		return fmt.Errorf("load required channels: %w", err)
 	}
+	log.Printf("membership prompt chat_id=%d user_id=%d missing=%v", chatID, userID, channels)
 
 	msg := tgbotapi.NewMessage(chatID, text)
 	joinButtons := utils.GetJoinChannelsButtons(channels)
