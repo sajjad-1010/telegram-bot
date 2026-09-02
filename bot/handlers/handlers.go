@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -72,7 +71,7 @@ func Init() {
 
 func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 	if update.CallbackQuery != nil {
-		trackAudienceFromCallback(update.CallbackQuery)
+		trackUserFromCallback(update.CallbackQuery)
 		log.Printf("callback chat_id=%d user_id=%d data=%s", callbackChatID(update.CallbackQuery), update.CallbackQuery.From.ID, strings.TrimSpace(update.CallbackQuery.Data))
 		handleCallbackQuery(bot, update.CallbackQuery)
 		return
@@ -82,7 +81,7 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		return
 	}
 
-	trackAudienceFromMessage(update.Message)
+	trackUserFromMessage(update.Message)
 	log.Printf(
 		"update chat_id=%d message_id=%d user_id=%d username=%s chat_type=%s",
 		update.Message.Chat.ID,
@@ -93,9 +92,11 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 	)
 
 	if update.Message.Chat.ID == forwardFromChatID {
-		if update.Message.MediaGroupID != "" {
-			if err := registerSourceMediaGroupMessage(bot, update.Message.MediaGroupID, update.Message.MessageID); err != nil {
-				log.Println("Error registering source media group message:", err)
+		if !isLinkableSourceMessage(update.Message) {
+			log.Printf("source message skipped, unsupported type message_id=%d", update.Message.MessageID)
+		} else if update.Message.MediaGroupID != "" {
+			if err := registerAlbumMessage(bot, update.Message.MediaGroupID, update.Message.MessageID, update.Message.Caption); err != nil {
+				log.Println("Error registering album message:", err)
 			}
 		} else {
 			if err := makeLinkForNewMessage(bot, update.Message.MessageID); err != nil {
@@ -104,8 +105,26 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		}
 	}
 
+	// A message that starts with a slash but does not parse as a command is the
+	// hardest failure to see from the outside, so log the parse for it.
+	if strings.HasPrefix(strings.TrimSpace(update.Message.Text), "/") {
+		types := make([]string, 0, len(update.Message.Entities))
+		for _, e := range update.Message.Entities {
+			types = append(types, fmt.Sprintf("%s@%d+%d", e.Type, e.Offset, e.Length))
+		}
+		log.Printf("slash message message_id=%d is_command=%t command=%q entities=[%s] text=%q",
+			update.Message.MessageID,
+			update.Message.IsCommand(),
+			update.Message.Command(),
+			strings.Join(types, " "),
+			update.Message.Text,
+		)
+	}
+
 	if update.Message.IsCommand() {
-		switch update.Message.Command() {
+		command := strings.ToLower(update.Message.Command())
+		log.Printf("command=%s chat_id=%d user_id=%d args=%q", command, update.Message.Chat.ID, update.Message.From.ID, update.Message.CommandArguments())
+		switch command {
 		case "start":
 			args := update.Message.CommandArguments()
 			if args != "" {
@@ -126,7 +145,11 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		case "lang":
 			handleLang(bot, update.Message)
 			return
+		case "link":
+			handleLinkCommand(bot, update.Message)
+			return
 		default:
+			log.Printf("unknown command=%s message_id=%d", command, update.Message.MessageID)
 			return
 		}
 	}
@@ -215,15 +238,53 @@ func makeLinkForNewMessage(bot *tgbotapi.BotAPI, messageID int) error {
 	link := utils.MakeDeepLink(bot.Self.UserName, encodedMsg)
 
 	msg := tgbotapi.NewMessage(forwardFromChatID, link)
+	msg.ReplyToMessageID = messageID
 	if _, err := bot.Send(msg); err != nil {
 		return fmt.Errorf("failed to send generated link: %w", err)
 	}
 
-	log.Println("Deep link created and sent to source chat")
+	log.Printf("Deep link created and sent to source chat reply_to=%d", messageID)
 	return nil
 }
 
-func makeLinkForMediaGroup(bot *tgbotapi.BotAPI, mediaGroupID string, itemCount int) error {
+// isLinkableSourceMessage reports whether a source-chat message carries media
+// that the bot must publish a deep link for. Plain text, stickers, polls and
+// service messages are ignored.
+func isLinkableSourceMessage(msg *tgbotapi.Message) bool {
+	if msg == nil {
+		return false
+	}
+	switch {
+	case len(msg.Photo) > 0:
+		return true
+	case msg.Video != nil:
+		return true
+	case msg.Audio != nil:
+		return true
+	case msg.Animation != nil:
+		return true
+	case msg.VideoNote != nil:
+		return true
+	case msg.Voice != nil:
+		return true
+	case msg.Document != nil:
+		return isMediaMIME(msg.Document.MimeType)
+	}
+	return false
+}
+
+// isMediaMIME reports whether a document MIME type is image, video or audio.
+func isMediaMIME(mime string) bool {
+	mime = strings.ToLower(strings.TrimSpace(mime))
+	if mime == "" {
+		return false
+	}
+	return strings.HasPrefix(mime, "image/") ||
+		strings.HasPrefix(mime, "video/") ||
+		strings.HasPrefix(mime, "audio/")
+}
+
+func makeLinkForMediaGroup(bot *tgbotapi.BotAPI, mediaGroupID string, messageIDs []int) error {
 	mediaGroupID = strings.TrimSpace(mediaGroupID)
 	if mediaGroupID == "" {
 		return fmt.Errorf("media_group_id is empty")
@@ -233,28 +294,37 @@ func makeLinkForMediaGroup(bot *tgbotapi.BotAPI, mediaGroupID string, itemCount 
 	link := utils.MakeDeepLink(bot.Self.UserName, payload)
 
 	msg := tgbotapi.NewMessage(forwardFromChatID, link)
+	if len(messageIDs) > 0 {
+		msg.ReplyToMessageID = messageIDs[0]
+	}
 	if _, err := bot.Send(msg); err != nil {
 		return fmt.Errorf("failed to send media group deep link: %w", err)
 	}
 
-	log.Printf("Media group deep link created and sent media_group_id=%s items=%d", mediaGroupID, itemCount)
+	log.Printf("Media group deep link created and sent media_group_id=%s items=%d reply_to=%d", mediaGroupID, len(messageIDs), msg.ReplyToMessageID)
 	return nil
 }
 
-func registerSourceMediaGroupMessage(bot *tgbotapi.BotAPI, mediaGroupID string, messageID int) error {
-	if err := db.AddSourceMediaGroupItem(mediaGroupID, messageID); err != nil {
+func registerAlbumMessage(bot *tgbotapi.BotAPI, mediaGroupID string, messageID int, caption string) error {
+	if err := db.AddLinkMessage(mediaGroupID, messageID); err != nil {
 		return err
 	}
 
-	log.Printf("source media group item stored media_group_id=%s message_id=%d", mediaGroupID, messageID)
+	// Telegram carries the album caption on one message only. Store it so every
+	// separated file can repeat it.
+	if err := db.SetLinkCaption(mediaGroupID, caption); err != nil {
+		log.Printf("store album caption failed media_group_id=%s: %v", mediaGroupID, err)
+	}
+
+	log.Printf("album message stored media_group_id=%s message_id=%d", mediaGroupID, messageID)
 
 	sourceMediaGroupMu.Lock()
 	if timer, ok := sourceMediaGroupTimers[mediaGroupID]; ok {
 		timer.Stop()
 	}
 	sourceMediaGroupTimers[mediaGroupID] = time.AfterFunc(sourceMediaGroupDebounce, func() {
-		if err := flushSourceMediaGroupLink(bot, mediaGroupID); err != nil {
-			log.Printf("source media group link flush failed media_group_id=%s: %v", mediaGroupID, err)
+		if err := flushAlbumLink(bot, mediaGroupID); err != nil {
+			log.Printf("album link flush failed media_group_id=%s: %v", mediaGroupID, err)
 		}
 	})
 	sourceMediaGroupMu.Unlock()
@@ -262,32 +332,32 @@ func registerSourceMediaGroupMessage(bot *tgbotapi.BotAPI, mediaGroupID string, 
 	return nil
 }
 
-func flushSourceMediaGroupLink(bot *tgbotapi.BotAPI, mediaGroupID string) error {
+func flushAlbumLink(bot *tgbotapi.BotAPI, mediaGroupID string) error {
 	sourceMediaGroupMu.Lock()
 	delete(sourceMediaGroupTimers, mediaGroupID)
 	sourceMediaGroupMu.Unlock()
 
-	sent, err := db.IsSourceMediaGroupLinkSent(mediaGroupID)
+	sent, err := db.IsLinkSent(mediaGroupID)
 	if err != nil {
 		return err
 	}
 	if sent {
-		log.Printf("source media group link already sent media_group_id=%s", mediaGroupID)
+		log.Printf("album link already sent media_group_id=%s", mediaGroupID)
 		return nil
 	}
 
-	messageIDs, err := db.GetSourceMediaGroupMessageIDs(mediaGroupID)
+	messageIDs, err := db.GetLinkMessageIDs(mediaGroupID)
 	if err != nil {
 		return err
 	}
 	if len(messageIDs) == 0 {
-		return fmt.Errorf("no source media group items found")
+		return fmt.Errorf("no album messages found")
 	}
 
-	if err := makeLinkForMediaGroup(bot, mediaGroupID, len(messageIDs)); err != nil {
+	if err := makeLinkForMediaGroup(bot, mediaGroupID, messageIDs); err != nil {
 		return err
 	}
-	if err := db.MarkSourceMediaGroupLinkSent(mediaGroupID); err != nil {
+	if err := db.MarkLinkSent(mediaGroupID); err != nil {
 		return err
 	}
 	return nil
@@ -509,7 +579,7 @@ func executeAutoMediaDownload(bot *tgbotapi.BotAPI, chatID int64, userID int64, 
 	if err != nil {
 		log.Printf("%s content download error for %s: %v", platform, link, err)
 		sendText(bot, chatID, userFacingDownloadError(lang, err, platform, "content"))
-		logDownloadEvent(userID, platform, link, "auto", db.DownloadStatusFailed)
+		log.Printf("download result=failed user_id=%d platform=%s mode=auto link=%s", userID, platform, link)
 		return
 	}
 	defer cleanup()
@@ -519,7 +589,7 @@ func executeAutoMediaDownload(bot *tgbotapi.BotAPI, chatID int64, userID int64, 
 	if sendErr != nil {
 		log.Println("Error sending content:", sendErr)
 		sendText(bot, chatID, userFacingDownloadError(lang, sendErr, platform, "content"))
-		logDownloadEvent(userID, platform, link, "auto", db.DownloadStatusFailed)
+		log.Printf("download result=failed user_id=%d platform=%s mode=auto link=%s", userID, platform, link)
 		return
 	}
 
@@ -533,7 +603,7 @@ func executeAutoMediaDownload(bot *tgbotapi.BotAPI, chatID int64, userID int64, 
 			log.Println("Optional Instagram attached audio send failed:", err)
 		}
 	}
-	logDownloadEvent(userID, platform, link, "auto", db.DownloadStatusOK)
+	log.Printf("download result=ok user_id=%d platform=%s mode=auto link=%s", userID, platform, link)
 	log.Printf("auto media download complete chat_id=%d platform=%s files=%d all_photos=%t", chatID, platform, len(contentPaths), summary.AllPhotos)
 }
 
@@ -560,17 +630,17 @@ func executeMediaOption(bot *tgbotapi.BotAPI, chatID int64, userID int64, req st
 		if err := downloadAndSendMP4(bot, chatID, req.Payload, selected.Selector, caption); err != nil {
 			log.Println("MP4 download/send error:", err)
 			sendText(bot, chatID, userFacingDownloadError(lang, err, req.Platform, "mp4"))
-			logDownloadEvent(userID, req.Platform, req.Payload, "mp4", db.DownloadStatusFailed)
+			log.Printf("download result=failed user_id=%d platform=%s mode=mp4 link=%s", userID, req.Platform, req.Payload)
 		} else {
-			logDownloadEvent(userID, req.Platform, req.Payload, "mp4", db.DownloadStatusOK)
+			log.Printf("download result=ok user_id=%d platform=%s mode=mp4 link=%s", userID, req.Platform, req.Payload)
 		}
 	case optionModeAudioMP3:
 		if err := downloadAndSendMP3(bot, chatID, req.Payload, req.Platform, caption); err != nil {
 			log.Println("MP3 download/send error:", err)
 			sendText(bot, chatID, userFacingDownloadError(lang, err, req.Platform, "mp3"))
-			logDownloadEvent(userID, req.Platform, req.Payload, "mp3", db.DownloadStatusFailed)
+			log.Printf("download result=failed user_id=%d platform=%s mode=mp3 link=%s", userID, req.Platform, req.Payload)
 		} else {
-			logDownloadEvent(userID, req.Platform, req.Payload, "mp3", db.DownloadStatusOK)
+			log.Printf("download result=ok user_id=%d platform=%s mode=mp3 link=%s", userID, req.Platform, req.Payload)
 		}
 	case optionModeBoth:
 		mp4Err := downloadAndSendMP4(bot, chatID, req.Payload, selected.Selector, caption)
@@ -584,18 +654,12 @@ func executeMediaOption(bot *tgbotapi.BotAPI, chatID int64, userID int64, req st
 			sendText(bot, chatID, userFacingDownloadError(lang, mp3Err, req.Platform, "mp3"))
 		}
 		if mp4Err == nil && mp3Err == nil {
-			logDownloadEvent(userID, req.Platform, req.Payload, "both", db.DownloadStatusOK)
+			log.Printf("download result=ok user_id=%d platform=%s mode=both link=%s", userID, req.Platform, req.Payload)
 		} else {
-			logDownloadEvent(userID, req.Platform, req.Payload, "both", db.DownloadStatusFailed)
+			log.Printf("download result=failed user_id=%d platform=%s mode=both link=%s mp4_err=%v mp3_err=%v", userID, req.Platform, req.Payload, mp4Err, mp3Err)
 		}
 	default:
 		sendText(bot, chatID, i18n.T(lang, i18n.KeyUnknownOption))
-	}
-}
-
-func logDownloadEvent(userID int64, platform, link, mode, status string) {
-	if err := db.LogDownload(userID, platform, link, mode, status); err != nil {
-		log.Printf("failed to log download event user_id=%d platform=%s status=%s: %v", userID, platform, status, err)
 	}
 }
 
@@ -1073,6 +1137,22 @@ func formatCaption(bot *tgbotapi.BotAPI) string {
 	return fmt.Sprintf("\U0001FA76 @%s \U0001F49C", bot.Self.UserName)
 }
 
+// defaultDeliveryCaption is the caption the bot puts on every file it copies
+// out of the source group. Set DELIVERY_CAPTION in .env to replace it. An empty
+// DELIVERY_CAPTION falls back to the caption of the source post.
+const defaultDeliveryCaption = "استیکر توت فرنگی"
+
+// deliveryCaption returns the caption for a copied file. sourceCaption is the
+// caption stored with the source post and is used only when the operator
+// clears DELIVERY_CAPTION.
+func deliveryCaption(sourceCaption string) string {
+	raw := config.GetEnv("DELIVERY_CAPTION", defaultDeliveryCaption)
+	if strings.TrimSpace(raw) == "" {
+		return sourceCaption
+	}
+	return raw
+}
+
 // executeForwardCopy copies the source-group post into the user's chat and
 // returns the IDs of the copies, so the caller can delete them later.
 func executeForwardCopy(bot *tgbotapi.BotAPI, chatID int64, encodedArg string) ([]int, error) {
@@ -1089,6 +1169,7 @@ func executeForwardCopy(bot *tgbotapi.BotAPI, chatID int64, encodedArg string) (
 	}
 
 	forward := tgbotapi.NewCopyMessage(chatID, forwardFromChatID, payload.MessageID)
+	forward.Caption = deliveryCaption("")
 	sent, err := bot.CopyMessage(forward)
 	if err != nil {
 		return nil, err
@@ -1096,8 +1177,12 @@ func executeForwardCopy(bot *tgbotapi.BotAPI, chatID int64, encodedArg string) (
 	return []int{sent.MessageID}, nil
 }
 
+// copySourceMediaGroup sends every album file as its own message. Telegram
+// would regroup the files into an album again if they went out in one
+// copyMessages call, and only one file of an album can carry a caption. So the
+// bot copies them one by one and repeats the album caption on each.
 func copySourceMediaGroup(bot *tgbotapi.BotAPI, chatID int64, mediaGroupID string) ([]int, error) {
-	messageIDs, err := db.GetSourceMediaGroupMessageIDs(mediaGroupID)
+	messageIDs, err := db.GetLinkMessageIDs(mediaGroupID)
 	if err != nil {
 		return nil, err
 	}
@@ -1105,60 +1190,24 @@ func copySourceMediaGroup(bot *tgbotapi.BotAPI, chatID int64, mediaGroupID strin
 		return nil, fmt.Errorf("source media group is empty")
 	}
 
-	log.Printf("copy source media group chat_id=%d media_group_id=%s items=%d", chatID, mediaGroupID, len(messageIDs))
-
-	if len(messageIDs) == 1 {
-		forward := tgbotapi.NewCopyMessage(chatID, forwardFromChatID, messageIDs[0])
-		sent, err := bot.CopyMessage(forward)
-		if err != nil {
-			return nil, err
-		}
-		return []int{sent.MessageID}, nil
+	sourceCaption, err := db.GetLinkCaption(mediaGroupID)
+	if err != nil {
+		log.Printf("read album caption failed media_group_id=%s: %v", mediaGroupID, err)
+		sourceCaption = ""
 	}
+	caption := deliveryCaption(sourceCaption)
 
-	if copied, err := requestCopyMessages(bot, chatID, forwardFromChatID, messageIDs); err == nil {
-		return copied, nil
-	} else {
-		log.Printf("copyMessages failed for media_group_id=%s, falling back to sequential copy: %v", mediaGroupID, err)
-	}
+	log.Printf("copy album chat_id=%d media_group_id=%s items=%d caption=%q", chatID, mediaGroupID, len(messageIDs), caption)
 
 	var copied []int
 	for _, messageID := range messageIDs {
 		forward := tgbotapi.NewCopyMessage(chatID, forwardFromChatID, messageID)
+		forward.Caption = caption
 		sent, err := bot.CopyMessage(forward)
 		if err != nil {
-			return copied, fmt.Errorf("sequential copy failed for message_id=%d: %w", messageID, err)
+			return copied, fmt.Errorf("copy failed for message_id=%d: %w", messageID, err)
 		}
 		copied = append(copied, sent.MessageID)
-	}
-	return copied, nil
-}
-
-func requestCopyMessages(bot *tgbotapi.BotAPI, chatID, fromChatID int64, messageIDs []int) ([]int, error) {
-	if len(messageIDs) == 0 {
-		return nil, fmt.Errorf("message_ids is empty")
-	}
-
-	params := make(tgbotapi.Params)
-	params.AddNonZero64("chat_id", chatID)
-	params.AddNonZero64("from_chat_id", fromChatID)
-	if err := params.AddInterface("message_ids", messageIDs); err != nil {
-		return nil, err
-	}
-
-	resp, err := bot.MakeRequest("copyMessages", params)
-	if err != nil {
-		return nil, err
-	}
-
-	var sent []tgbotapi.MessageID
-	if err := json.Unmarshal(resp.Result, &sent); err != nil {
-		return nil, fmt.Errorf("decode copyMessages result: %w", err)
-	}
-
-	copied := make([]int, 0, len(sent))
-	for _, m := range sent {
-		copied = append(copied, m.MessageID)
 	}
 	return copied, nil
 }
@@ -1360,56 +1409,24 @@ func deletePendingDownload(chatID int64) {
 	log.Printf("pending deleted chat_id=%d", chatID)
 }
 
-func trackAudienceFromMessage(msg *tgbotapi.Message) {
-	if msg == nil || msg.From == nil {
+// trackUserFromMessage records a user on first contact only. A user already in
+// the table causes no write.
+func trackUserFromMessage(msg *tgbotapi.Message) {
+	if msg == nil || msg.From == nil || msg.From.IsBot {
 		return
 	}
-
-	contact := db.AudienceContact{
-		UserID:       msg.From.ID,
-		ChatID:       msg.Chat.ID,
-		Username:     msg.From.UserName,
-		FirstName:    msg.From.FirstName,
-		LastName:     msg.From.LastName,
-		ChatType:     msg.Chat.Type,
-		ChatTitle:    msg.Chat.Title,
-		ChatUsername: msg.Chat.UserName,
-		IsBot:        msg.From.IsBot,
-	}
-	if err := db.UpsertAudienceContact(contact); err != nil {
-		log.Printf("audience upsert failed user_id=%d chat_id=%d: %v", contact.UserID, contact.ChatID, err)
+	if err := db.AddUser(msg.From.ID, msg.From.UserName); err != nil {
+		log.Printf("add user failed user_id=%d: %v", msg.From.ID, err)
 	}
 }
 
-func trackAudienceFromCallback(cb *tgbotapi.CallbackQuery) {
-	if cb == nil || cb.From == nil {
+// trackUserFromCallback records a user on first contact only.
+func trackUserFromCallback(cb *tgbotapi.CallbackQuery) {
+	if cb == nil || cb.From == nil || cb.From.IsBot {
 		return
 	}
-
-	chatID := cb.From.ID
-	chatType := "private"
-	chatTitle := ""
-	chatUsername := ""
-	if cb.Message != nil {
-		chatID = cb.Message.Chat.ID
-		chatType = cb.Message.Chat.Type
-		chatTitle = cb.Message.Chat.Title
-		chatUsername = cb.Message.Chat.UserName
-	}
-
-	contact := db.AudienceContact{
-		UserID:       cb.From.ID,
-		ChatID:       chatID,
-		Username:     cb.From.UserName,
-		FirstName:    cb.From.FirstName,
-		LastName:     cb.From.LastName,
-		ChatType:     chatType,
-		ChatTitle:    chatTitle,
-		ChatUsername: chatUsername,
-		IsBot:        cb.From.IsBot,
-	}
-	if err := db.UpsertAudienceContact(contact); err != nil {
-		log.Printf("audience upsert failed user_id=%d chat_id=%d: %v", contact.UserID, contact.ChatID, err)
+	if err := db.AddUser(cb.From.ID, cb.From.UserName); err != nil {
+		log.Printf("add user failed user_id=%d: %v", cb.From.ID, err)
 	}
 }
 
@@ -1582,44 +1599,18 @@ func handleStats(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	var b strings.Builder
 	b.WriteString("Bot statistics\n\n")
 
-	if users, err := db.CountUniqueUsers(); err != nil {
-		log.Println("stats: count unique users failed:", err)
+	if users, err := db.CountUsers(); err != nil {
+		log.Println("stats: count users failed:", err)
 		b.WriteString("Users: unavailable\n")
 	} else {
 		b.WriteString(fmt.Sprintf("Users: %d\n", users))
 	}
 
-	if chats, err := db.CountChatsByType(); err != nil {
-		log.Println("stats: count chats by type failed:", err)
-	} else if len(chats) > 0 {
-		b.WriteString("Chats:\n")
-		for _, c := range chats {
-			label := c.ChatType
-			if label == "" {
-				label = "unknown"
-			}
-			b.WriteString(fmt.Sprintf("  • %s: %d\n", label, c.Count))
-		}
-	}
-
-	b.WriteString("\n")
-	total, totalErr := db.CountDownloads()
-	if totalErr != nil {
-		log.Println("stats: count downloads failed:", totalErr)
-		b.WriteString("Downloads: unavailable")
+	if links, err := db.CountLinks(); err != nil {
+		log.Println("stats: count links failed:", err)
+		b.WriteString("Album links: unavailable\n")
 	} else {
-		okCount, _ := db.CountDownloadsByStatus(db.DownloadStatusOK)
-		failCount, _ := db.CountDownloadsByStatus(db.DownloadStatusFailed)
-		b.WriteString(fmt.Sprintf("Downloads: %d total (%d ok, %d failed)\n", total, okCount, failCount))
-
-		if perPlatform, err := db.DownloadsByPlatform(); err != nil {
-			log.Println("stats: downloads by platform failed:", err)
-		} else if len(perPlatform) > 0 {
-			b.WriteString("By platform:\n")
-			for _, p := range perPlatform {
-				b.WriteString(fmt.Sprintf("  • %s: %d\n", p.Platform, p.Count))
-			}
-		}
+		b.WriteString(fmt.Sprintf("Album links: %d\n", links))
 	}
 
 	sendText(bot, msg.Chat.ID, strings.TrimRight(b.String(), "\n"))
@@ -1916,4 +1907,160 @@ func findMediaOption(options []state.MediaOption, key string) (state.MediaOption
 		}
 	}
 	return state.MediaOption{}, false
+}
+
+// --- /link : merge several existing deep links into one ---
+
+const (
+	maxBundleItems = 50
+	bundlePrefix   = "c"
+)
+
+// handleLinkCommand merges the deep links pasted after /link into a single new
+// deep link. Each pasted link resolves either to one message or to a whole
+// album, and every resolved message goes into one new bundle.
+//
+// The command works only inside the source group, because the bundle can only
+// point at messages of that group.
+func handleLinkCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	if msg.Chat.ID != forwardFromChatID {
+		log.Printf("/link used outside the source group chat_id=%d source_chat_id=%d", msg.Chat.ID, forwardFromChatID)
+		return
+	}
+
+	log.Printf("/link start chat_id=%d args=%q", msg.Chat.ID, msg.CommandArguments())
+
+	tokens := strings.Fields(msg.CommandArguments())
+	if len(tokens) == 0 {
+		replyTo(bot, msg, "لینک‌ها را بعد از /link بفرست، با فاصله بین آنها.")
+		return
+	}
+
+	var messageIDs []int
+	seen := map[int]bool{}
+
+	for _, token := range tokens {
+		if countLinkStarts(token) > 1 {
+			replyTo(bot, msg, "لینک‌ها را با فاصله جدا کن: "+token)
+			return
+		}
+
+		payload, err := payloadFromLink(bot, token)
+		if err != nil {
+			replyTo(bot, msg, err.Error())
+			return
+		}
+
+		resolved, err := resolvePayload(payload)
+		if err != nil {
+			replyTo(bot, msg, err.Error())
+			return
+		}
+
+		for _, id := range resolved {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			messageIDs = append(messageIDs, id)
+		}
+	}
+
+	if len(messageIDs) < 2 {
+		replyTo(bot, msg, "حداقل دو لینک بده.")
+		return
+	}
+	if len(messageIDs) > maxBundleItems {
+		replyTo(bot, msg, fmt.Sprintf("حداکثر %d فایل در یک لینک. الان %d تا شد.", maxBundleItems, len(messageIDs)))
+		return
+	}
+
+	// The command message ID is unique and increasing inside one chat, so it
+	// makes a stable bundle ID without a clock or a random source.
+	bundleID := fmt.Sprintf("%s%d_%d", bundlePrefix, msg.Chat.ID, msg.MessageID)
+
+	for _, id := range messageIDs {
+		if err := db.AddLinkMessage(bundleID, id); err != nil {
+			log.Printf("bundle append failed bundle_id=%s message_id=%d: %v", bundleID, id, err)
+			replyTo(bot, msg, "ساخت لینک شکست خورد.")
+			return
+		}
+	}
+	if err := db.MarkLinkSent(bundleID); err != nil {
+		log.Printf("mark bundle sent failed bundle_id=%s: %v", bundleID, err)
+	}
+
+	link := utils.MakeDeepLink(bot.Self.UserName, utils.EncodeMediaGroup(bundleID))
+	log.Printf("bundle created bundle_id=%s items=%d", bundleID, len(messageIDs))
+	replyTo(bot, msg, link)
+}
+
+// countLinkStarts reports how many deep links are glued into one token.
+func countLinkStarts(token string) int {
+	return strings.Count(strings.ToLower(token), "?start=")
+}
+
+// payloadFromLink accepts a full deep link or a bare payload and returns the
+// start payload.
+func payloadFromLink(bot *tgbotapi.BotAPI, token string) (string, error) {
+	token = strings.Trim(strings.TrimSpace(token), "<>\"'.,)")
+	if token == "" {
+		return "", fmt.Errorf("لینک خالی است.")
+	}
+
+	if !strings.Contains(token, "://") && !strings.Contains(token, "?start=") {
+		return token, nil
+	}
+
+	parsed, err := url.Parse(token)
+	if err != nil {
+		return "", fmt.Errorf("لینک خراب: %s", token)
+	}
+	if !strings.EqualFold(parsed.Host, "t.me") && !strings.EqualFold(parsed.Host, "telegram.me") {
+		return "", fmt.Errorf("لینک نامعتبر: %s", token)
+	}
+
+	wantPath := "/" + strings.ToLower(bot.Self.UserName)
+	if !strings.EqualFold(strings.TrimRight(parsed.Path, "/"), wantPath) {
+		return "", fmt.Errorf("لینک این ربات نیست: %s", token)
+	}
+
+	payload := strings.TrimSpace(parsed.Query().Get("start"))
+	if payload == "" {
+		return "", fmt.Errorf("لینک خراب: %s", token)
+	}
+	return payload, nil
+}
+
+// resolvePayload turns one start payload into the source message IDs it covers.
+func resolvePayload(payload string) ([]int, error) {
+	parsed, err := utils.ParseDeepLinkPayload(payload)
+	if err != nil {
+		return nil, fmt.Errorf("لینک خراب: %s", payload)
+	}
+
+	if parsed.MediaGroupID != "" {
+		ids, err := db.GetLinkMessageIDs(parsed.MediaGroupID)
+		if err != nil {
+			return nil, fmt.Errorf("خواندن آلبوم شکست خورد: %s", payload)
+		}
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("این آلبوم پیدا نشد: %s", payload)
+		}
+		return ids, nil
+	}
+
+	if parsed.MessageID <= 0 {
+		return nil, fmt.Errorf("لینک خراب: %s", payload)
+	}
+	return []int{parsed.MessageID}, nil
+}
+
+// replyTo answers the command message in place.
+func replyTo(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, text string) {
+	reply := tgbotapi.NewMessage(msg.Chat.ID, text)
+	reply.ReplyToMessageID = msg.MessageID
+	if _, err := bot.Send(reply); err != nil {
+		log.Println("Error sending /link reply:", err)
+	}
 }
