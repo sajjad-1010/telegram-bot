@@ -26,3 +26,10 @@ __pycache__/
 
 # Per-user Claude Code settings
 .claude/settings.local.json
+run-local.sh
+rotate-logs.sh
+backup.sh
+logs/
+*.db
+*.db-wal
+*.db-shm

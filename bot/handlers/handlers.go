@@ -318,8 +318,8 @@ func linkDestination(sourceMessageID int) (chatID int64, replyTo int, note strin
 		return forwardFromChatID, sourceMessageID, "", nil
 	}
 
-	adminID, parseErr := strconv.ParseInt(strings.TrimSpace(config.GetEnv("ADMIN_USER_ID", "")), 10, 64)
-	if parseErr != nil || adminID == 0 {
+	adminID := firstAdminID()
+	if adminID == 0 {
 		return 0, 0, "", fmt.Errorf("source chat is a channel: set LINKS_CHAT_ID or ADMIN_USER_ID to receive its links")
 	}
 	return adminID, 0, sourcePostURL(channel, sourceMessageID), nil
@@ -1767,28 +1767,75 @@ func handleStats(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	sendText(bot, msg.Chat.ID, strings.TrimRight(b.String(), "\n"))
 }
 
+// adminIDs parses ADMIN_USER_ID, a comma-separated list of Telegram user IDs.
+// Telegram guarantees From.ID is authentic (it cannot be spoofed), so the ID
+// list alone is a secure admin gate.
+func adminIDs() []int64 {
+	raw := strings.TrimSpace(config.GetEnv("ADMIN_USER_ID", ""))
+	if raw == "" {
+		return nil
+	}
+	var ids []int64
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			log.Printf("WARNING: invalid admin id %q in ADMIN_USER_ID", part)
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// firstAdminID returns one admin ID for direct messages (e.g. where a channel's
+// links are delivered), or 0 when none is configured.
+func firstAdminID() int64 {
+	ids := adminIDs()
+	if len(ids) == 0 {
+		return 0
+	}
+	return ids[0]
+}
+
 func isAdmin(user *tgbotapi.User) bool {
 	if user == nil {
 		return false
 	}
 
-	adminIDStr := strings.TrimSpace(config.GetEnv("ADMIN_USER_ID", ""))
-	if adminIDStr == "" {
+	ids := adminIDs()
+	if len(ids) == 0 {
 		log.Println("WARNING: ADMIN_USER_ID is not set — admin commands are disabled")
 		return false
 	}
 
-	adminID, err := strconv.ParseInt(adminIDStr, 10, 64)
-	if err != nil || user.ID != adminID {
+	isListed := false
+	for _, id := range ids {
+		if user.ID == id {
+			isListed = true
+			break
+		}
+	}
+	if !isListed {
 		return false
 	}
 
-	adminUsername := db.NormalizeChannel(config.GetEnv("ADMIN_USERNAME", ""))
-	if adminUsername != "" && db.NormalizeChannel(user.UserName) != adminUsername {
-		return false
+	// Optional extra gate: if ADMIN_USERNAME is set (comma-separated), the
+	// sender's username must be among it. Left empty, the ID list governs.
+	allowed := strings.TrimSpace(config.GetEnv("ADMIN_USERNAME", ""))
+	if allowed == "" {
+		return true
 	}
-
-	return true
+	sender := db.NormalizeChannel(user.UserName)
+	for _, name := range strings.Split(allowed, ",") {
+		if db.NormalizeChannel(name) == sender && sender != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func isStaticRequiredChannel(ch string) bool {
