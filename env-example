@@ -72,6 +72,8 @@ FORWARD_DELETE_SECONDS=60
 
 # GIF/animation shown with the /start welcome message (empty = text only)
 WELCOME_GIF_PATH=logo/stash-electric.gif
+# Daily backup target chat (default: first ADMIN_USER_ID). See deploy/backup.py.
+BACKUP_CHAT_ID=
 
 # Caption put on every file the bot copies out of the source group.
 # Leave empty to use the caption of the source post instead.

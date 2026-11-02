@@ -28,8 +28,10 @@ __pycache__/
 .claude/settings.local.json
 run-local.sh
 rotate-logs.sh
-backup.sh
 logs/
 *.db
 *.db-wal
 *.db-shm
+
+# Local database backups (deploy/backup.py)
+backups/
