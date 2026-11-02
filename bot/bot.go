@@ -47,6 +47,8 @@ func Start() error {
 		config.GetEnv("DEFAULT_LANG", "en"),
 	)
 
+	handlers.DetectSourceChat(Bot)
+
 	if err := redditfeed.Start(Bot); err != nil {
 		return err
 	}

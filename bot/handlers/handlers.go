@@ -22,7 +22,14 @@ import (
 )
 
 var (
-	forwardFromChatID      int64
+	forwardFromChatID int64
+	// linksChatID overrides where generated deep links are posted (LINKS_CHAT_ID).
+	linksChatID int64
+	// sourceChannel is set once a post arrives from a source chat that is a
+	// channel; links then go to linkDestination instead of into the channel.
+	sourceChannelMu sync.Mutex
+	sourceChannel   *tgbotapi.Chat
+
 	pendingStore           *state.PendingStore
 	sourceMediaGroupMu     sync.Mutex
 	sourceMediaGroupTimers = map[string]*time.Timer{}
@@ -77,6 +84,15 @@ func Init() {
 	} else {
 		log.Println("FORWARD_FROM_CHAT_ID is not set")
 	}
+
+	if raw := strings.TrimSpace(config.GetEnv("LINKS_CHAT_ID", "")); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			log.Println("Error parsing LINKS_CHAT_ID:", err)
+		} else {
+			linksChatID = id
+		}
+	}
 }
 
 func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
@@ -84,6 +100,13 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		trackUserFromCallback(update.CallbackQuery)
 		log.Printf("callback chat_id=%d user_id=%d data=%s", callbackChatID(update.CallbackQuery), update.CallbackQuery.From.ID, strings.TrimSpace(update.CallbackQuery.Data))
 		handleCallbackQuery(bot, update.CallbackQuery)
+		return
+	}
+
+	// A channel used as the source chat delivers its posts as channel_post,
+	// not message. The bot must be an admin of the channel to receive them.
+	if update.ChannelPost != nil {
+		handleSourcePost(bot, update.ChannelPost)
 		return
 	}
 
@@ -107,19 +130,7 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		update.Message.Chat.Type,
 	)
 
-	if update.Message.Chat.ID == forwardFromChatID {
-		if !isLinkableSourceMessage(update.Message) {
-			log.Printf("source message skipped, unsupported type message_id=%d", update.Message.MessageID)
-		} else if update.Message.MediaGroupID != "" {
-			if err := registerAlbumMessage(bot, update.Message.MediaGroupID, update.Message.MessageID, update.Message.Caption); err != nil {
-				log.Println("Error registering album message:", err)
-			}
-		} else {
-			if err := makeLinkForNewMessage(bot, update.Message.MessageID); err != nil {
-				log.Println("Error creating deep link:", err)
-			}
-		}
-	}
+	handleSourcePost(bot, update.Message)
 
 	// A message that starts with a slash but does not parse as a command is the
 	// hardest failure to see from the outside, so log the parse for it.
@@ -245,6 +256,108 @@ func handleStartWithArgs(bot *tgbotapi.BotAPI, chatID int64, userID int64, args 
 	sendSaveNoticeAndScheduleDelete(bot, chatID, args, copied)
 }
 
+// DetectSourceChat looks up the source chat once at startup, so a channel is
+// known as one before its first post arrives (e.g. for /link after a restart).
+func DetectSourceChat(bot *tgbotapi.BotAPI) {
+	if forwardFromChatID == 0 {
+		return
+	}
+	chat, err := bot.GetChat(tgbotapi.ChatInfoConfig{ChatConfig: tgbotapi.ChatConfig{ChatID: forwardFromChatID}})
+	if err != nil {
+		log.Printf("source chat lookup failed chat_id=%d: %v", forwardFromChatID, err)
+		return
+	}
+	log.Printf("source chat chat_id=%d type=%s", chat.ID, chat.Type)
+	if chat.IsChannel() {
+		sourceChannelMu.Lock()
+		sourceChannel = &chat
+		sourceChannelMu.Unlock()
+	}
+}
+
+// handleSourcePost publishes a deep link for a media post in the source chat,
+// which may be a group (message) or a channel (channel_post).
+func handleSourcePost(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	if msg == nil || forwardFromChatID == 0 || msg.Chat.ID != forwardFromChatID {
+		return
+	}
+	if msg.Chat.IsChannel() {
+		sourceChannelMu.Lock()
+		sourceChannel = msg.Chat
+		sourceChannelMu.Unlock()
+	}
+
+	if !isLinkableSourceMessage(msg) {
+		log.Printf("source message skipped, unsupported type message_id=%d", msg.MessageID)
+		return
+	}
+	if msg.MediaGroupID != "" {
+		if err := registerAlbumMessage(bot, msg.MediaGroupID, msg.MessageID, msg.Caption); err != nil {
+			log.Println("Error registering album message:", err)
+		}
+		return
+	}
+	if err := makeLinkForNewMessage(bot, msg.MessageID); err != nil {
+		log.Println("Error creating deep link:", err)
+	}
+}
+
+// linkDestination says where to post the deep link for a source post.
+// A group gets the link as a reply to the post, as before. A channel never
+// does: every subscriber would see it. Links for a channel go to LINKS_CHAT_ID,
+// or else privately to ADMIN_USER_ID, with a pointer back to the post.
+func linkDestination(sourceMessageID int) (chatID int64, replyTo int, note string, err error) {
+	sourceChannelMu.Lock()
+	channel := sourceChannel
+	sourceChannelMu.Unlock()
+
+	if linksChatID != 0 && linksChatID != forwardFromChatID {
+		return linksChatID, 0, sourcePostURL(channel, sourceMessageID), nil
+	}
+	if channel == nil {
+		return forwardFromChatID, sourceMessageID, "", nil
+	}
+
+	adminID, parseErr := strconv.ParseInt(strings.TrimSpace(config.GetEnv("ADMIN_USER_ID", "")), 10, 64)
+	if parseErr != nil || adminID == 0 {
+		return 0, 0, "", fmt.Errorf("source chat is a channel: set LINKS_CHAT_ID or ADMIN_USER_ID to receive its links")
+	}
+	return adminID, 0, sourcePostURL(channel, sourceMessageID), nil
+}
+
+// sourcePostURL builds a t.me link to a channel post, or "" for a group.
+func sourcePostURL(channel *tgbotapi.Chat, messageID int) string {
+	if channel == nil || messageID <= 0 {
+		return ""
+	}
+	if channel.UserName != "" {
+		return fmt.Sprintf("https://t.me/%s/%d", channel.UserName, messageID)
+	}
+	// Private channels: t.me/c/<id without the -100 prefix>/<message id>.
+	internalID := strings.TrimPrefix(strconv.FormatInt(channel.ID, 10), "-100")
+	return fmt.Sprintf("https://t.me/c/%s/%d", internalID, messageID)
+}
+
+// sendSourceLink posts a generated deep link for the given source post.
+func sendSourceLink(bot *tgbotapi.BotAPI, link string, sourceMessageID int) error {
+	chatID, replyTo, note, err := linkDestination(sourceMessageID)
+	if err != nil {
+		return err
+	}
+	text := link
+	if note != "" {
+		text = note + "\n" + link
+	}
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyToMessageID = replyTo
+	msg.DisableWebPagePreview = true
+	if _, err := bot.Send(msg); err != nil {
+		return err
+	}
+	log.Printf("deep link sent chat_id=%d reply_to=%d source_message_id=%d", chatID, replyTo, sourceMessageID)
+	return nil
+}
+
 func makeLinkForNewMessage(bot *tgbotapi.BotAPI, messageID int) error {
 	if messageID < 0 {
 		return fmt.Errorf("messageID must be non-negative")
@@ -253,13 +366,9 @@ func makeLinkForNewMessage(bot *tgbotapi.BotAPI, messageID int) error {
 	encodedMsg := utils.Encode(messageID)
 	link := utils.MakeDeepLink(bot.Self.UserName, encodedMsg)
 
-	msg := tgbotapi.NewMessage(forwardFromChatID, link)
-	msg.ReplyToMessageID = messageID
-	if _, err := bot.Send(msg); err != nil {
+	if err := sendSourceLink(bot, link, messageID); err != nil {
 		return fmt.Errorf("failed to send generated link: %w", err)
 	}
-
-	log.Printf("Deep link created and sent to source chat reply_to=%d", messageID)
 	return nil
 }
 
@@ -309,15 +418,15 @@ func makeLinkForMediaGroup(bot *tgbotapi.BotAPI, mediaGroupID string, messageIDs
 	payload := utils.EncodeMediaGroup(mediaGroupID)
 	link := utils.MakeDeepLink(bot.Self.UserName, payload)
 
-	msg := tgbotapi.NewMessage(forwardFromChatID, link)
+	firstID := 0
 	if len(messageIDs) > 0 {
-		msg.ReplyToMessageID = messageIDs[0]
+		firstID = messageIDs[0]
 	}
-	if _, err := bot.Send(msg); err != nil {
+	if err := sendSourceLink(bot, link, firstID); err != nil {
 		return fmt.Errorf("failed to send media group deep link: %w", err)
 	}
 
-	log.Printf("Media group deep link created and sent media_group_id=%s items=%d reply_to=%d", mediaGroupID, len(messageIDs), msg.ReplyToMessageID)
+	log.Printf("Media group deep link created media_group_id=%s items=%d", mediaGroupID, len(messageIDs))
 	return nil
 }
 
@@ -1965,8 +2074,11 @@ const (
 // The command works only inside the source group, because the bundle can only
 // point at messages of that group.
 func handleLinkCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	if msg.Chat.ID != forwardFromChatID {
-		log.Printf("/link used outside the source group chat_id=%d source_chat_id=%d", msg.Chat.ID, forwardFromChatID)
+	// Channels cannot take commands without showing them to subscribers, so
+	// /link also works where a channel's links are delivered.
+	linkChat, _, _, _ := linkDestination(0)
+	if msg.Chat.ID != forwardFromChatID && (linkChat == 0 || msg.Chat.ID != linkChat) {
+		log.Printf("/link used outside the source/links chat chat_id=%d source_chat_id=%d", msg.Chat.ID, forwardFromChatID)
 		return
 	}
 

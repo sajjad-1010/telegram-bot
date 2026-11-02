@@ -1,6 +1,10 @@
 # Core
 BOT_TOKEN=
+# Source group or channel whose media posts get deep links. For a channel the
+# bot must be a channel admin; its links go to LINKS_CHAT_ID, else to ADMIN_USER_ID.
 FORWARD_FROM_CHAT_ID=
+# Optional chat that receives generated deep links (default: the source group).
+LINKS_CHAT_ID=
 ADMIN_USER_ID=
 ADMIN_USERNAME=
 BASE_REQUIRED_CHANNEL=MurkoffProjectsleep
