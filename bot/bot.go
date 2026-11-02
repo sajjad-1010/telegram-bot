@@ -2,6 +2,7 @@ package bot
 
 import (
 	"log"
+	"runtime/debug"
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -57,10 +58,21 @@ func Start() error {
 	updates := Bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		go handlers.HandleUpdate(Bot, update)
+		go handleUpdateSafely(update)
 	}
 
 	return nil
+}
+
+// handleUpdateSafely keeps a panic in one update's handler from taking down
+// the whole process (an unrecovered panic in any goroutine exits the program).
+func handleUpdateSafely(update tgbotapi.Update) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC handling update_id=%d: %v\n%s", update.UpdateID, r, debug.Stack())
+		}
+	}()
+	handlers.HandleUpdate(Bot, update)
 }
 
 func logError(msg string) error {

@@ -26,6 +26,9 @@ var (
 	pendingStore           *state.PendingStore
 	sourceMediaGroupMu     sync.Mutex
 	sourceMediaGroupTimers = map[string]*time.Timer{}
+	// downloadSlots caps concurrent downloads; each one runs yt-dlp/ffmpeg or
+	// a Python downloader and can fill INSTAGRAM_MAX_FILE_SIZE_MB of temp disk.
+	downloadSlots chan struct{}
 )
 
 type contentSendSummary struct {
@@ -56,6 +59,13 @@ const (
 func Init() {
 	pendingStore = state.NewPendingStoreFromEnv()
 
+	maxDownloads := forwardIntEnv("MAX_CONCURRENT_DOWNLOADS", 3)
+	if maxDownloads <= 0 {
+		maxDownloads = 3
+	}
+	downloadSlots = make(chan struct{}, maxDownloads)
+	log.Printf("config: max_concurrent_downloads=%d", maxDownloads)
+
 	chatIDStr := config.GetEnv("FORWARD_FROM_CHAT_ID", "")
 	if chatIDStr != "" {
 		id, err := strconv.ParseInt(chatIDStr, 10, 64)
@@ -78,6 +88,12 @@ func HandleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 	}
 
 	if update.Message == nil {
+		return
+	}
+	// Every handler below dereferences From; Telegram leaves it empty for
+	// sender-less posts, which this bot has nothing to do with.
+	if update.Message.From == nil {
+		log.Printf("message without sender skipped chat_id=%d message_id=%d", update.Message.Chat.ID, update.Message.MessageID)
 		return
 	}
 
@@ -522,9 +538,10 @@ func ensureMembershipOrQueue(bot *tgbotapi.BotAPI, chatID int64, userID int64, r
 		return true
 	}
 
-	storePendingDownload(chatID, req)
+	storePendingDownload(chatID, userID, req)
 	log.Printf("membership required chat_id=%d user_id=%d kind=%s platform=%s", chatID, userID, req.Kind, req.Platform)
-	if err := middleware.SendMembershipRequiredPrompt(bot, chatID, userID, i18n.T(userLang(userID), i18n.KeyMembershipRequired)); err != nil {
+	lang := userLang(userID)
+	if err := middleware.SendMembershipRequiredPrompt(bot, chatID, userID, lang, i18n.T(lang, i18n.KeyMembershipRequired)); err != nil {
 		log.Println("Error sending membership prompt:", err)
 	}
 	return false
@@ -554,7 +571,7 @@ func sendMediaOptionsPrompt(bot *tgbotapi.BotAPI, chatID int64, userID int64, re
 	if len(req.Options) == 0 {
 		req.Options = buildDefaultMediaOptions()
 	}
-	storePendingDownload(chatID, req)
+	storePendingDownload(chatID, userID, req)
 	log.Printf("media options prompt chat_id=%d platform=%s options=%d", chatID, req.Platform, len(req.Options))
 
 	msg := tgbotapi.NewMessage(chatID, i18n.Tf(userLang(userID), i18n.KeyChooseFormat, req.Platform))
@@ -574,6 +591,9 @@ func executeAutoMediaDownload(bot *tgbotapi.BotAPI, chatID int64, userID int64, 
 	} else {
 		defer deleteMessage(bot, chatID, sentWaitMsg.MessageID)
 	}
+
+	release := acquireDownloadSlot()
+	defer release()
 
 	contentPaths, cleanup, err := instagram.DownloadBestContents(link)
 	if err != nil {
@@ -625,9 +645,12 @@ func executeMediaOption(bot *tgbotapi.BotAPI, chatID int64, userID int64, req st
 		return
 	}
 
+	release := acquireDownloadSlot()
+	defer release()
+
 	switch selected.Mode {
 	case optionModeVideoMP4:
-		if err := downloadAndSendMP4(bot, chatID, req.Payload, selected.Selector, caption); err != nil {
+		if err := downloadAndSendMP4(bot, chatID, req.Payload, selected.Selector, mp4CacheMode(selected), caption); err != nil {
 			log.Println("MP4 download/send error:", err)
 			sendText(bot, chatID, userFacingDownloadError(lang, err, req.Platform, "mp4"))
 			log.Printf("download result=failed user_id=%d platform=%s mode=mp4 link=%s", userID, req.Platform, req.Payload)
@@ -643,7 +666,7 @@ func executeMediaOption(bot *tgbotapi.BotAPI, chatID int64, userID int64, req st
 			log.Printf("download result=ok user_id=%d platform=%s mode=mp3 link=%s", userID, req.Platform, req.Payload)
 		}
 	case optionModeBoth:
-		mp4Err := downloadAndSendMP4(bot, chatID, req.Payload, selected.Selector, caption)
+		mp4Err := downloadAndSendMP4(bot, chatID, req.Payload, selected.Selector, mp4CacheMode(selected), caption)
 		if mp4Err != nil {
 			log.Println("MP4 part failed in MP4+MP3:", mp4Err)
 			sendText(bot, chatID, userFacingDownloadError(lang, mp4Err, req.Platform, "mp4"))
@@ -661,6 +684,16 @@ func executeMediaOption(bot *tgbotapi.BotAPI, chatID int64, userID int64, req st
 	default:
 		sendText(bot, chatID, i18n.T(lang, i18n.KeyUnknownOption))
 	}
+}
+
+// acquireDownloadSlot blocks until a download slot is free and returns the
+// func that frees it. The "downloading" message is already shown meanwhile.
+func acquireDownloadSlot() func() {
+	if downloadSlots == nil {
+		return func() {}
+	}
+	downloadSlots <- struct{}{}
+	return func() { <-downloadSlots }
 }
 
 func userFacingDownloadError(lang string, err error, platform, mode string) string {
@@ -728,10 +761,9 @@ func getConfiguredMaxDownloadSizeMB() int {
 	return v
 }
 
-func downloadAndSendMP4(bot *tgbotapi.BotAPI, chatID int64, link, selector, caption string) error {
+func downloadAndSendMP4(bot *tgbotapi.BotAPI, chatID int64, link, selector, cacheMode, caption string) error {
 	cacheKey := cacheKeyForLink(link)
-	mode := mp4CacheMode(selector)
-	if _, ok := trySendCachedMedia(bot, chatID, cacheKey, mode, caption); ok {
+	if _, ok := trySendCachedMedia(bot, chatID, cacheKey, cacheMode, caption); ok {
 		return nil
 	}
 
@@ -745,20 +777,21 @@ func downloadAndSendMP4(bot *tgbotapi.BotAPI, chatID int64, link, selector, capt
 	if err != nil {
 		return err
 	}
-	cacheSentMedia(cacheKey, mode, kind, sent)
+	cacheSentMedia(cacheKey, cacheMode, kind, sent)
 	return nil
 }
 
-// mp4CacheMode derives a cache mode that keeps different requested video
-// qualities in separate cache slots (mp4:1080, mp4:720, ...). Unknown/empty
-// selectors fall back to the generic mp4 slot.
-func mp4CacheMode(selector string) string {
-	for _, h := range []string{"1080", "720", "480", "360", "240"} {
-		if strings.Contains(selector, "height<="+h) {
-			return db.MediaCacheModeMP4 + ":" + h
-		}
+// mp4CacheMode gives each picker option its own cache slot (mp4:q1080,
+// mp4:q720, ..., mp4:both). It keys on the option rather than the selector:
+// probed YouTube selectors are bare format IDs ("137+bestaudio/137") that
+// carry no height, so keying on them put every quality in one slot and served
+// whichever quality was cached first.
+func mp4CacheMode(option state.MediaOption) string {
+	key := strings.TrimPrefix(strings.TrimSpace(option.Key), "yt_")
+	if key == "" {
+		return db.MediaCacheModeMP4
 	}
-	return db.MediaCacheModeMP4
+	return db.MediaCacheModeMP4 + ":" + key
 }
 
 // trySendCachedMedia sends a previously cached file_id if present. Returns
@@ -1274,7 +1307,7 @@ func handleResendCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
 
 	lang := userLang(cb.From.ID)
 	if !middleware.IsUserMember(bot, cb.From.ID) {
-		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, cb.From.ID, i18n.T(lang, i18n.KeyMembershipRequired)); err != nil {
+		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, cb.From.ID, lang, i18n.T(lang, i18n.KeyMembershipRequired)); err != nil {
 			log.Println("Error sending membership prompt:", err)
 		}
 		return
@@ -1322,7 +1355,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
 }
 
 func handleMembershipCheckCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
-	if _, err := bot.Request(tgbotapi.NewCallback(cb.ID, "Checking membership...")); err != nil {
+	if _, err := bot.Request(tgbotapi.NewCallback(cb.ID, i18n.T(userLang(cb.From.ID), i18n.KeyCheckingMembership))); err != nil {
 		log.Println("Error answering callback query:", err)
 	}
 
@@ -1332,29 +1365,33 @@ func handleMembershipCheckCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQu
 	}
 
 	lang := userLang(cb.From.ID)
-	req, ok := getPendingDownload(chatID)
-	if !ok {
+	if _, ok := getPendingDownload(chatID, cb.From.ID); !ok {
 		sendText(bot, chatID, i18n.T(lang, i18n.KeyNoPendingRequest))
 		return
 	}
 
 	if !middleware.IsUserMember(bot, cb.From.ID) {
-		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, cb.From.ID, i18n.T(lang, i18n.KeyStillNotMember)); err != nil {
+		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, cb.From.ID, lang, i18n.T(lang, i18n.KeyStillNotMember)); err != nil {
 			log.Println("Error sending membership prompt:", err)
 		}
 		return
 	}
 
+	// Take, not Get+Delete: a second tap that raced past the checks above
+	// finds nothing here and stops instead of running the request again.
+	req, ok := takePendingDownload(chatID, cb.From.ID)
+	if !ok {
+		return
+	}
 	if cb.Message != nil {
 		deleteMessage(bot, chatID, cb.Message.MessageID)
 	}
-	deletePendingDownload(chatID)
 	log.Printf("membership callback success chat_id=%d user_id=%d", chatID, cb.From.ID)
 	executePendingRequest(bot, chatID, cb.From.ID, req)
 }
 
 func handleMediaOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
-	if _, err := bot.Request(tgbotapi.NewCallback(cb.ID, "Processing your selection...")); err != nil {
+	if _, err := bot.Request(tgbotapi.NewCallback(cb.ID, i18n.T(userLang(cb.From.ID), i18n.KeyProcessingSelection))); err != nil {
 		log.Println("Error answering media option callback:", err)
 	}
 
@@ -1364,49 +1401,54 @@ func handleMediaOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery)
 	}
 
 	lang := userLang(cb.From.ID)
-	req, ok := getPendingDownload(chatID)
+	req, ok := getPendingDownload(chatID, cb.From.ID)
 	if !ok || req.Kind != pendingKindMediaChoice {
 		sendText(bot, chatID, i18n.T(lang, i18n.KeyNoPendingSelection))
 		return
 	}
 
 	if !middleware.IsUserMember(bot, cb.From.ID) {
-		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, cb.From.ID, i18n.T(lang, i18n.KeyMembershipRequired)); err != nil {
+		if err := middleware.SendMembershipRequiredPrompt(bot, chatID, cb.From.ID, lang, i18n.T(lang, i18n.KeyMembershipRequired)); err != nil {
 			log.Println("Error sending membership prompt:", err)
 		}
 		return
 	}
 
+	if req, ok = takePendingDownload(chatID, cb.From.ID); !ok {
+		return
+	}
 	if cb.Message != nil {
 		deleteMessage(bot, chatID, cb.Message.MessageID)
 	}
 
-	deletePendingDownload(chatID)
 	option := strings.TrimPrefix(cb.Data, callbackMediaOptionPrefix)
 	executeMediaOption(bot, chatID, cb.From.ID, req, option)
 }
 
-func storePendingDownload(chatID int64, req state.PendingRequest) {
+func storePendingDownload(chatID, userID int64, req state.PendingRequest) {
 	if pendingStore == nil {
 		pendingStore = state.NewPendingStoreFromEnv()
 	}
-	pendingStore.Set(chatID, req)
-	log.Printf("pending stored chat_id=%d kind=%s platform=%s", chatID, req.Kind, req.Platform)
+	pendingStore.Set(chatID, userID, req)
+	log.Printf("pending stored chat_id=%d user_id=%d kind=%s platform=%s", chatID, userID, req.Kind, req.Platform)
 }
 
-func getPendingDownload(chatID int64) (state.PendingRequest, bool) {
+func getPendingDownload(chatID, userID int64) (state.PendingRequest, bool) {
 	if pendingStore == nil {
 		pendingStore = state.NewPendingStoreFromEnv()
 	}
-	return pendingStore.Get(chatID)
+	return pendingStore.Get(chatID, userID)
 }
 
-func deletePendingDownload(chatID int64) {
+func takePendingDownload(chatID, userID int64) (state.PendingRequest, bool) {
 	if pendingStore == nil {
 		pendingStore = state.NewPendingStoreFromEnv()
 	}
-	pendingStore.Delete(chatID)
-	log.Printf("pending deleted chat_id=%d", chatID)
+	req, ok := pendingStore.Take(chatID, userID)
+	if ok {
+		log.Printf("pending taken chat_id=%d user_id=%d", chatID, userID)
+	}
+	return req, ok
 }
 
 // trackUserFromMessage records a user on first contact only. A user already in

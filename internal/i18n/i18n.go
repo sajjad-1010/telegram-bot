@@ -30,14 +30,18 @@ const (
 	KeyDownloading           = "downloading"
 	KeyLangChanged           = "lang_changed"
 	KeyChooseLanguage        = "choose_language"
+	KeyCheckMembershipButton = "check_membership_button"
+	KeyJoinChannelButton     = "join_channel_button"
+	KeyCheckingMembership    = "checking_membership"
+	KeyProcessingSelection   = "processing_selection"
 
-	KeyHelpIntro             = "help_intro"
-	KeyHelpPlatforms         = "help_platforms"
-	KeyHelpPickFormat        = "help_pick_format"
-	KeyHelpPrivateLinks      = "help_private_links"
-	KeyHelpAdminHeader       = "help_admin_header"
-	KeyHelpAdminStats        = "help_admin_stats"
-	KeyHelpAdminChannels     = "help_admin_channels"
+	KeyHelpIntro         = "help_intro"
+	KeyHelpPlatforms     = "help_platforms"
+	KeyHelpPickFormat    = "help_pick_format"
+	KeyHelpPrivateLinks  = "help_private_links"
+	KeyHelpAdminHeader   = "help_admin_header"
+	KeyHelpAdminStats    = "help_admin_stats"
+	KeyHelpAdminChannels = "help_admin_channels"
 
 	// Download error messages (format verbs preserved).
 	KeyErrGeneric            = "err_generic"
@@ -57,7 +61,7 @@ const (
 
 var translations = map[string]map[string]string{
 	LangEN: {
-		KeyStart:              "Open the private link of a file to receive it.",
+		KeyStart: "Open the private link of a file to receive it.",
 		KeyWelcome: "👋 Welcome! I download media from social links.\n\n" +
 			"📥 *How to use:* just send me a link.\n\n" +
 			"*Supported:*\n" +
@@ -71,19 +75,23 @@ var translations = map[string]map[string]string{
 			"*Commands:*\n" +
 			"• /help — full guide\n" +
 			"• /lang — change language (English / Русский)",
-		KeyInvalidLink:        "Invalid link. Please open a valid file link.",
-		KeyFetchFailed:        "Failed to fetch file. Try again later.",
-		KeyUnknownPending:     "Unknown pending request. Please send the link again.",
-		KeyUnknownOption:      "Unknown download option.",
-		KeyRateLimited:        "You're sending requests too fast. Please try again later.",
-		KeyMembershipRequired: "Join required channels first, then tap Check membership.",
-		KeyStillNotMember:     "You are still not a member of all required channels.",
-		KeyNoPendingRequest:   "No pending request found. Please send the link again.",
-		KeyNoPendingSelection: "No pending media selection found. Send the link again.",
-		KeyChooseFormat:       "Choose format for %s:",
-		KeyDownloading:        "Downloading from %s, please wait...",
-		KeyLangChanged:        "Language set to English.",
-		KeyChooseLanguage:     "Choose a language:",
+		KeyInvalidLink:           "Invalid link. Please open a valid file link.",
+		KeyFetchFailed:           "Failed to fetch file. Try again later.",
+		KeyUnknownPending:        "Unknown pending request. Please send the link again.",
+		KeyUnknownOption:         "Unknown download option.",
+		KeyRateLimited:           "You're sending requests too fast. Please try again later.",
+		KeyMembershipRequired:    "Join required channels first, then tap Check membership.",
+		KeyStillNotMember:        "You are still not a member of all required channels.",
+		KeyNoPendingRequest:      "No pending request found. Please send the link again.",
+		KeyNoPendingSelection:    "No pending media selection found. Send the link again.",
+		KeyChooseFormat:          "Choose format for %s:",
+		KeyDownloading:           "Downloading from %s, please wait...",
+		KeyLangChanged:           "Language set to English.",
+		KeyChooseLanguage:        "Choose a language:",
+		KeyCheckMembershipButton: "Check membership",
+		KeyJoinChannelButton:     "Join %s",
+		KeyCheckingMembership:    "Checking membership...",
+		KeyProcessingSelection:   "Processing your selection...",
 
 		KeyHelpIntro:         "Send a link and I'll fetch the media.",
 		KeyHelpPlatforms:     "Supported platforms:\n• Instagram (reel / post / story / TV)\n• TikTok\n• YouTube (video / shorts / live)\n• Reddit\n• Twitter / X\n• Pinterest",
@@ -108,7 +116,7 @@ var translations = map[string]map[string]string{
 		KeyErrAudioSendFailed:    "Failed to send %s audio. Please try again later.",
 	},
 	LangRU: {
-		KeyStart:              "Откройте приватную ссылку файла, чтобы получить его.",
+		KeyStart: "Откройте приватную ссылку файла, чтобы получить его.",
 		KeyWelcome: "👋 Привет! Я скачиваю медиа по ссылкам из соцсетей.\n\n" +
 			"📥 *Как пользоваться:* просто отправьте мне ссылку.\n\n" +
 			"*Поддерживается:*\n" +
@@ -122,19 +130,23 @@ var translations = map[string]map[string]string{
 			"*Команды:*\n" +
 			"• /help — полное руководство\n" +
 			"• /lang — сменить язык (English / Русский)",
-		KeyInvalidLink:        "Неверная ссылка. Пожалуйста, откройте корректную ссылку на файл.",
-		KeyFetchFailed:        "Не удалось получить файл. Попробуйте позже.",
-		KeyUnknownPending:     "Неизвестный запрос. Пожалуйста, отправьте ссылку ещё раз.",
-		KeyUnknownOption:      "Неизвестный вариант загрузки.",
-		KeyRateLimited:        "Вы отправляете запросы слишком часто. Попробуйте позже.",
-		KeyMembershipRequired: "Сначала подпишитесь на обязательные каналы, затем нажмите «Проверить подписку».",
-		KeyStillNotMember:     "Вы всё ещё не подписаны на все обязательные каналы.",
-		KeyNoPendingRequest:   "Активный запрос не найден. Пожалуйста, отправьте ссылку ещё раз.",
-		KeyNoPendingSelection: "Выбор медиа не найден. Отправьте ссылку ещё раз.",
-		KeyChooseFormat:       "Выберите формат для %s:",
-		KeyDownloading:        "Загружаю из %s, пожалуйста, подождите...",
-		KeyLangChanged:        "Язык изменён на русский.",
-		KeyChooseLanguage:     "Выберите язык:",
+		KeyInvalidLink:           "Неверная ссылка. Пожалуйста, откройте корректную ссылку на файл.",
+		KeyFetchFailed:           "Не удалось получить файл. Попробуйте позже.",
+		KeyUnknownPending:        "Неизвестный запрос. Пожалуйста, отправьте ссылку ещё раз.",
+		KeyUnknownOption:         "Неизвестный вариант загрузки.",
+		KeyRateLimited:           "Вы отправляете запросы слишком часто. Попробуйте позже.",
+		KeyMembershipRequired:    "Сначала подпишитесь на обязательные каналы, затем нажмите «Проверить подписку».",
+		KeyStillNotMember:        "Вы всё ещё не подписаны на все обязательные каналы.",
+		KeyNoPendingRequest:      "Активный запрос не найден. Пожалуйста, отправьте ссылку ещё раз.",
+		KeyNoPendingSelection:    "Выбор медиа не найден. Отправьте ссылку ещё раз.",
+		KeyChooseFormat:          "Выберите формат для %s:",
+		KeyDownloading:           "Загружаю из %s, пожалуйста, подождите...",
+		KeyLangChanged:           "Язык изменён на русский.",
+		KeyChooseLanguage:        "Выберите язык:",
+		KeyCheckMembershipButton: "Проверить подписку",
+		KeyJoinChannelButton:     "Подписаться на %s",
+		KeyCheckingMembership:    "Проверяем подписку...",
+		KeyProcessingSelection:   "Обрабатываем ваш выбор...",
 
 		KeyHelpIntro:         "Отправьте ссылку, и я скачаю медиа.",
 		KeyHelpPlatforms:     "Поддерживаемые платформы:\n• Instagram (reel / пост / истории / TV)\n• TikTok\n• YouTube (видео / shorts / трансляции)\n• Reddit\n• Twitter / X\n• Pinterest",

@@ -19,3 +19,10 @@ dist/
 cookies.txt
 .venv/
 data/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Per-user Claude Code settings
+.claude/settings.local.json

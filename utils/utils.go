@@ -11,10 +11,12 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-func GetJoinChannelsButtons(channels []string) []tgbotapi.InlineKeyboardButton {
+// GetJoinChannelsButtons builds one URL button per channel. labelFormat is a
+// fmt pattern with a single %s for the channel name.
+func GetJoinChannelsButtons(channels []string, labelFormat string) []tgbotapi.InlineKeyboardButton {
 	var buttons []tgbotapi.InlineKeyboardButton
 	for _, ch := range channels {
-		btn := tgbotapi.NewInlineKeyboardButtonURL("Join "+ch, "https://t.me/"+ch)
+		btn := tgbotapi.NewInlineKeyboardButtonURL(fmt.Sprintf(labelFormat, ch), "https://t.me/"+ch)
 		buttons = append(buttons, btn)
 	}
 	return buttons

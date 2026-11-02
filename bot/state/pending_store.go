@@ -33,11 +33,23 @@ type PendingStore struct {
 	redisClient *redis.Client
 	ttl         time.Duration
 
-	ramMu sync.RWMutex
-	ram   map[int64]PendingRequest
+	ramMu sync.Mutex
+	ram   map[pendingKey]ramPendingEntry
 
 	rlMu sync.Mutex
 	rl   map[string]ramRateEntry
+}
+
+// pendingKey scopes a pending request to one user in one chat, so in a group
+// users neither overwrite each other's request nor act on someone else's.
+type pendingKey struct {
+	chatID int64
+	userID int64
+}
+
+type ramPendingEntry struct {
+	req       PendingRequest
+	expiresAt time.Time
 }
 
 type ramRateEntry struct {
@@ -48,7 +60,7 @@ type ramRateEntry struct {
 func NewPendingStoreFromEnv() *PendingStore {
 	store := &PendingStore{
 		ttl: 15 * time.Minute,
-		ram: make(map[int64]PendingRequest),
+		ram: make(map[pendingKey]ramPendingEntry),
 		rl:  make(map[string]ramRateEntry),
 	}
 
@@ -62,7 +74,6 @@ func NewPendingStoreFromEnv() *PendingStore {
 	addr := strings.TrimSpace(config.GetEnv("REDIS_ADDR", ""))
 	if addr == "" {
 		log.Println("Redis is not configured. Using RAM fallback for pending requests.")
-		log.Println("WARNING: RAM pending store has no TTL — pending requests will not expire and memory will grow over time.")
 		return store
 	}
 
@@ -93,39 +104,42 @@ func NewPendingStoreFromEnv() *PendingStore {
 	return store
 }
 
-func (s *PendingStore) Set(chatID int64, req PendingRequest) {
-	if s.tryRedisSet(chatID, req) {
-		s.deleteRAM(chatID)
+func (s *PendingStore) Set(chatID, userID int64, req PendingRequest) {
+	key := pendingKey{chatID: chatID, userID: userID}
+	if s.tryRedisSet(key, req) {
+		s.deleteRAM(key)
 		return
 	}
 
-	s.setRAM(chatID, req)
+	s.setRAM(key, req)
 }
 
-func (s *PendingStore) Get(chatID int64) (PendingRequest, bool) {
-	if req, ok, usedRedis := s.tryRedisGet(chatID); usedRedis {
-		if ok {
-			return req, true
-		}
-		if ramReq, ramOK := s.getRAM(chatID); ramOK {
-			return ramReq, true
-		}
-		return PendingRequest{}, false
+func (s *PendingStore) Get(chatID, userID int64) (PendingRequest, bool) {
+	key := pendingKey{chatID: chatID, userID: userID}
+	if req, ok, usedRedis := s.tryRedisGet(key, false); usedRedis && ok {
+		return req, true
 	}
-
-	return s.getRAM(chatID)
+	return s.getRAM(key, false)
 }
 
-func (s *PendingStore) Delete(chatID int64) {
-	if s.tryRedisDelete(chatID) {
-		s.deleteRAM(chatID)
-		return
+// Take returns the pending request and removes it in one step. When two
+// callbacks race for the same request (a double tap), only one gets ok=true.
+func (s *PendingStore) Take(chatID, userID int64) (PendingRequest, bool) {
+	key := pendingKey{chatID: chatID, userID: userID}
+	if req, ok, usedRedis := s.tryRedisGet(key, true); usedRedis && ok {
+		s.deleteRAM(key)
+		return req, true
 	}
-
-	s.deleteRAM(chatID)
+	return s.getRAM(key, true)
 }
 
-func (s *PendingStore) tryRedisSet(chatID int64, req PendingRequest) bool {
+func (s *PendingStore) Delete(chatID, userID int64) {
+	key := pendingKey{chatID: chatID, userID: userID}
+	s.tryRedisDelete(key)
+	s.deleteRAM(key)
+}
+
+func (s *PendingStore) tryRedisSet(key pendingKey, req PendingRequest) bool {
 	if s.redisClient == nil {
 		return false
 	}
@@ -139,7 +153,7 @@ func (s *PendingStore) tryRedisSet(chatID int64, req PendingRequest) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	if err := s.redisClient.Set(ctx, s.redisKey(chatID), payload, s.ttl).Err(); err != nil {
+	if err := s.redisClient.Set(ctx, s.redisKey(key), payload, s.ttl).Err(); err != nil {
 		log.Printf("Redis SET failed (%v). Using RAM fallback for pending requests.", err)
 		return false
 	}
@@ -147,7 +161,9 @@ func (s *PendingStore) tryRedisSet(chatID int64, req PendingRequest) bool {
 	return true
 }
 
-func (s *PendingStore) tryRedisGet(chatID int64) (PendingRequest, bool, bool) {
+// tryRedisGet reads (and with take=true atomically deletes, via GETDEL) the
+// pending request. usedRedis is false when Redis is unavailable or failed.
+func (s *PendingStore) tryRedisGet(key pendingKey, take bool) (req PendingRequest, ok bool, usedRedis bool) {
 	if s.redisClient == nil {
 		return PendingRequest{}, false, false
 	}
@@ -155,7 +171,13 @@ func (s *PendingStore) tryRedisGet(chatID int64) (PendingRequest, bool, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	value, err := s.redisClient.Get(ctx, s.redisKey(chatID)).Result()
+	var value string
+	var err error
+	if take {
+		value, err = s.redisClient.GetDel(ctx, s.redisKey(key)).Result()
+	} else {
+		value, err = s.redisClient.Get(ctx, s.redisKey(key)).Result()
+	}
 	if err == redis.Nil {
 		return PendingRequest{}, false, true
 	}
@@ -164,7 +186,6 @@ func (s *PendingStore) tryRedisGet(chatID int64) (PendingRequest, bool, bool) {
 		return PendingRequest{}, false, false
 	}
 
-	var req PendingRequest
 	if err := json.Unmarshal([]byte(value), &req); err != nil {
 		log.Printf("Redis payload unmarshal failed (%v). Using RAM fallback for pending requests.", err)
 		return PendingRequest{}, false, false
@@ -173,7 +194,7 @@ func (s *PendingStore) tryRedisGet(chatID int64) (PendingRequest, bool, bool) {
 	return req, true, true
 }
 
-func (s *PendingStore) tryRedisDelete(chatID int64) bool {
+func (s *PendingStore) tryRedisDelete(key pendingKey) bool {
 	if s.redisClient == nil {
 		return false
 	}
@@ -181,34 +202,52 @@ func (s *PendingStore) tryRedisDelete(chatID int64) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	if err := s.redisClient.Del(ctx, s.redisKey(chatID)).Err(); err != nil {
-		log.Printf("Redis DEL failed (%v). Using RAM fallback for pending requests.", err)
+	if err := s.redisClient.Del(ctx, s.redisKey(key)).Err(); err != nil {
+		log.Printf("Redis DEL failed (%v).", err)
 		return false
 	}
 	return true
 }
 
-func (s *PendingStore) setRAM(chatID int64, req PendingRequest) {
+func (s *PendingStore) setRAM(key pendingKey, req PendingRequest) {
 	s.ramMu.Lock()
 	defer s.ramMu.Unlock()
-	s.ram[chatID] = req
+
+	now := time.Now()
+	for k, v := range s.ram {
+		if now.After(v.expiresAt) {
+			delete(s.ram, k)
+		}
+	}
+	s.ram[key] = ramPendingEntry{req: req, expiresAt: now.Add(s.ttl)}
 }
 
-func (s *PendingStore) getRAM(chatID int64) (PendingRequest, bool) {
-	s.ramMu.RLock()
-	defer s.ramMu.RUnlock()
-	req, ok := s.ram[chatID]
-	return req, ok
-}
-
-func (s *PendingStore) deleteRAM(chatID int64) {
+func (s *PendingStore) getRAM(key pendingKey, take bool) (PendingRequest, bool) {
 	s.ramMu.Lock()
 	defer s.ramMu.Unlock()
-	delete(s.ram, chatID)
+
+	entry, ok := s.ram[key]
+	if !ok {
+		return PendingRequest{}, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(s.ram, key)
+		return PendingRequest{}, false
+	}
+	if take {
+		delete(s.ram, key)
+	}
+	return entry.req, true
 }
 
-func (s *PendingStore) redisKey(chatID int64) string {
-	return fmt.Sprintf("pending:chat:%d", chatID)
+func (s *PendingStore) deleteRAM(key pendingKey) {
+	s.ramMu.Lock()
+	defer s.ramMu.Unlock()
+	delete(s.ram, key)
+}
+
+func (s *PendingStore) redisKey(key pendingKey) string {
+	return fmt.Sprintf("pending:chat:%d:user:%d", key.chatID, key.userID)
 }
 
 // AllowRequest reports whether userID may make another request within the current

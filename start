@@ -9,7 +9,7 @@ if [[ ! -f ".env" ]]; then
   echo "No .env file found in ${SCRIPT_DIR}, using system environment variables"
 fi
 
-# go-sqlite3 needs cgo; default to enabling it.
-: "${CGO_ENABLED:=1}"
+# modernc.org/sqlite is pure Go, so cgo is not required.
+: "${CGO_ENABLED:=0}"
 
 go run ./cmd "$@"

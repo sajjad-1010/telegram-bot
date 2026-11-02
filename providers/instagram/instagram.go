@@ -1,6 +1,7 @@
 package instagram
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"telegram-bot/config"
 	"time"
 )
@@ -405,7 +407,47 @@ func GetMediaTitle(link string) (string, error) {
 	return title, nil
 }
 
+const infoCacheTTL = 10 * time.Minute
+
+type infoCacheEntry struct {
+	root      ytRoot
+	expiresAt time.Time
+}
+
+var (
+	infoCacheMu sync.Mutex
+	infoCache   = map[string]infoCacheEntry{}
+)
+
+// fetchInfoJSON returns yt-dlp metadata for link. One YouTube request asks for
+// it up to four times (Probe, quality list, download, title), each a multi-second
+// network round-trip, so successful results are reused for infoCacheTTL.
 func fetchInfoJSON(link string) (ytRoot, error) {
+	infoCacheMu.Lock()
+	entry, ok := infoCache[link]
+	infoCacheMu.Unlock()
+	if ok && time.Now().Before(entry.expiresAt) {
+		return entry.root, nil
+	}
+
+	root, err := fetchInfoJSONUncached(link)
+	if err != nil {
+		return ytRoot{}, err
+	}
+
+	infoCacheMu.Lock()
+	now := time.Now()
+	for k, v := range infoCache {
+		if now.After(v.expiresAt) {
+			delete(infoCache, k)
+		}
+	}
+	infoCache[link] = infoCacheEntry{root: root, expiresAt: now.Add(infoCacheTTL)}
+	infoCacheMu.Unlock()
+	return root, nil
+}
+
+func fetchInfoJSONUncached(link string) (ytRoot, error) {
 	timeout := getIntEnv("INSTAGRAM_DOWNLOAD_TIMEOUT_SECONDS", defaultTimeoutSeconds)
 
 	cmdArgs := buildYTDLPBaseArgs(link)
@@ -535,26 +577,44 @@ func downloadManyWithExtraArgs(link string, extraArgs ...string) (filePaths []st
 	return filePaths, cleanup, nil
 }
 
+// runCommandWithTimeout runs cmd and returns its stdout. Stderr is kept apart
+// so warnings and log lines cannot corrupt output that callers parse (JSON,
+// printed file paths); it is folded into the error message on failure. On
+// timeout the child's whole process tree is killed, not just the direct child.
 func runCommandWithTimeout(cmd *exec.Cmd, timeoutSeconds int) ([]byte, error) {
-	type result struct {
-		out []byte
-		err error
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = defaultTimeoutSeconds
 	}
 
-	done := make(chan result, 1)
-	go func() {
-		out, err := cmd.CombinedOutput()
-		done <- result{out: out, err: err}
-	}()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = 5 * time.Second
+	startInOwnProcessGroup(cmd)
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start %s: %w", filepath.Base(cmd.Path), err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	timer := time.NewTimer(time.Duration(timeoutSeconds) * time.Second)
+	defer timer.Stop()
 
 	select {
-	case res := <-done:
-		if res.err != nil {
-			return nil, fmt.Errorf("%w (%s)", res.err, strings.TrimSpace(string(res.out)))
+	case err := <-done:
+		if err != nil {
+			detail := strings.TrimSpace(stderr.String())
+			if detail == "" {
+				detail = strings.TrimSpace(stdout.String())
+			}
+			return nil, fmt.Errorf("%w (%s)", err, detail)
 		}
-		return res.out, nil
-	case <-time.After(time.Duration(timeoutSeconds) * time.Second):
-		_ = cmd.Process.Kill()
+		return stdout.Bytes(), nil
+	case <-timer.C:
+		killProcessTree(cmd)
+		<-done
 		return nil, errors.New("command timed out")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"telegram-bot/bot/state"
 	"telegram-bot/utils"
 )
 
@@ -86,4 +87,23 @@ func TestDeliveryCaption(t *testing.T) {
 			t.Fatalf("want the source caption, got %q", got)
 		}
 	})
+}
+
+func TestMP4CacheModeSeparatesQualities(t *testing.T) {
+	probed := []state.MediaOption{
+		{Key: "yt_q1080", Selector: "137+bestaudio/137"},
+		{Key: "yt_q720", Selector: "136+bestaudio/136"},
+		{Key: optionKeyBoth, Selector: "137+bestaudio/137"},
+	}
+	seen := map[string]string{}
+	for _, opt := range probed {
+		mode := mp4CacheMode(opt)
+		if prev, dup := seen[mode]; dup {
+			t.Fatalf("options %s and %s share cache mode %q", prev, opt.Key, mode)
+		}
+		seen[mode] = opt.Key
+	}
+	if got := mp4CacheMode(probed[0]); got != "mp4:q1080" {
+		t.Fatalf("mp4CacheMode = %q, want mp4:q1080", got)
+	}
 }

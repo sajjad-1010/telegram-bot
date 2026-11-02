@@ -7,6 +7,8 @@ BASE_REQUIRED_CHANNEL=MurkoffProjectsleep
 DB_PATH=data/bot.db
 # Max media requests per user per hour (0 = disabled). Admins bypass.
 RATE_LIMIT_PER_HOUR=30
+# Max downloads running at the same time; extra requests wait their turn.
+MAX_CONCURRENT_DOWNLOADS=3
 # Local Bot API server URL (empty = api.telegram.org, 50MB cap).
 # Point at a self-hosted telegram-bot-api to raise the upload limit.
 TELEGRAM_LOCAL_API_URL=

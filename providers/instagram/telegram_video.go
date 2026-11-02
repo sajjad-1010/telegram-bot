@@ -41,10 +41,9 @@ func NormalizeForTelegram(inputPath string) (outputPath string, cleanup func(), 
 		outputPath,
 	)
 
-	out, runErr := cmd.CombinedOutput()
-	if runErr != nil {
+	if _, runErr := runCommandWithTimeout(cmd, getIntEnv("INSTAGRAM_DOWNLOAD_TIMEOUT_SECONDS", defaultTimeoutSeconds)); runErr != nil {
 		cleanup()
-		return "", func() {}, fmt.Errorf("ffmpeg normalize failed: %w (%s)", runErr, strings.TrimSpace(string(out)))
+		return "", func() {}, fmt.Errorf("ffmpeg normalize failed: %w", runErr)
 	}
 
 	return outputPath, cleanup, nil

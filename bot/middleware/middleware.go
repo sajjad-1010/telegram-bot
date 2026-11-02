@@ -33,7 +33,7 @@ func MissingChannels(bot *tgbotapi.BotAPI, userID int64) ([]string, error) {
 
 		log.Printf("User %d status in @%s: %s", userID, ch, member.Status)
 
-		if member.Status != "member" && member.Status != "administrator" && member.Status != "creator" {
+		if !isJoinedStatus(member) {
 			missing = append(missing, ch)
 		}
 	}
@@ -55,4 +55,17 @@ func IsUserMember(bot *tgbotapi.BotAPI, userID int64) bool {
 	}
 
 	return true
+}
+
+// isJoinedStatus reports whether a chat member counts as joined. A
+// "restricted" user (e.g. muted) is still in the channel when IsMember is set.
+func isJoinedStatus(member tgbotapi.ChatMember) bool {
+	switch member.Status {
+	case "member", "administrator", "creator":
+		return true
+	case "restricted":
+		return member.IsMember
+	default:
+		return false
+	}
 }
