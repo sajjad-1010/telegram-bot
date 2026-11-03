@@ -77,4 +77,4 @@ BACKUP_CHAT_ID=
 
 # Caption put on every file the bot copies out of the source group.
 # Leave empty to use the caption of the source post instead.
-DELIVERY_CAPTION=استیکر توت فرنگی
+DELIVERY_CAPTION=🍓

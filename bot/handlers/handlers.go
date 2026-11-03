@@ -1282,7 +1282,7 @@ func formatCaption(bot *tgbotapi.BotAPI) string {
 // defaultDeliveryCaption is the caption the bot puts on every file it copies
 // out of the source group. Set DELIVERY_CAPTION in .env to replace it. An empty
 // DELIVERY_CAPTION falls back to the caption of the source post.
-const defaultDeliveryCaption = "استیکر توت فرنگی"
+const defaultDeliveryCaption = "🍓"
 
 // deliveryCaption returns the caption for a copied file. sourceCaption is the
 // caption stored with the source post and is used only when the operator
